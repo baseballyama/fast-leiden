@@ -44,6 +44,41 @@ describe("leiden() input validation", () => {
     ).toThrow(/weights length/);
   });
 
+  // NaN / Infinity weights propagate into libleidenalg and surface as
+  // quality=NaN, which silently corrupts the result. Reject at the boundary.
+  it("rejects NaN in weights", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        weights: new Float64Array([Number.NaN]),
+      }),
+    ).toThrow(/weights\[0\] must be finite/);
+  });
+
+  it("rejects Infinity in weights", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        weights: new Float64Array([Number.POSITIVE_INFINITY]),
+      }),
+    ).toThrow(/weights\[0\] must be finite/);
+  });
+
+  it("rejects -Infinity in weights, regardless of position", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0, 1]),
+        targets: new Uint32Array([1, 0]),
+        weights: new Float64Array([1.0, Number.NEGATIVE_INFINITY]),
+      }),
+    ).toThrow(/weights\[1\] must be finite/);
+  });
+
   it("rejects unknown qualityFunction values", () => {
     expect(() =>
       leiden({
@@ -110,6 +145,17 @@ describe("leidenFromCsr() input validation", () => {
         targets: new Uint32Array([0]),
       }),
     ).toThrow(/non-decreasing|exceeds/);
+  });
+
+  it("rejects NaN in CSR weights", () => {
+    expect(() =>
+      leidenFromCsr({
+        nodeCount: 2,
+        offsets: new Uint32Array([0, 1, 1]),
+        targets: new Uint32Array([1]),
+        weights: new Float64Array([Number.NaN]),
+      }),
+    ).toThrow(/weights\[0\] must be finite/);
   });
 });
 

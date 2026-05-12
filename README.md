@@ -84,6 +84,20 @@ See [`src/types.ts`](./src/types.ts) for the full type definitions.
 > Not yet published. The package will be available as `fast-leiden` on npm once
 > the initial release is cut.
 
+### Install model and roadmap
+
+Today the npm package ships the `igraph` and `libleidenalg` sources under
+`vendor/`, and the `install` lifecycle hook runs CMake + the C++ toolchain on
+the consumer's machine to produce the `.node` addon. That means every install
+requires CMake, a C++17 compiler, and Python (for `node-gyp`) — and the first
+install takes several minutes.
+
+This is a deliberate trade-off for the early releases (it keeps the package
+small, auditable, and works on any platform the toolchain supports), not a
+long-term goal. **Prebuilt binaries via `prebuild` / `prebuild-install` are on
+the roadmap** before 1.0; once those land, the source build will become an
+opt-in fallback rather than the default.
+
 For local development:
 
 ```bash

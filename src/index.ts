@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { native } from "./native.js";
 import type { LeidenCsrInput, LeidenInput, LeidenResult } from "./types.js";
 
@@ -9,8 +10,14 @@ export type {
   LeidenResult,
 } from "./types.js";
 
-/** Native addon version string. Useful for smoke-testing the build. */
-export const version = (): string => native.version();
+// Read package.json at runtime instead of hard-coding the version in the
+// source. The native side reads the same value via a generated header
+// (scripts/write-version-header.mjs), so both layers share package.json as the
+// single source of truth.
+const pkg = createRequire(__filename)("../package.json") as { version: string };
+
+/** Package version. Matches `package.json` exactly. */
+export const version = (): string => pkg.version;
 
 /**
  * Run Leiden community detection on an edge-list graph.
@@ -140,6 +147,7 @@ const validateEdgeListInput = (input: LeidenInput): void => {
           `(${input.weights.length} vs ${input.sources.length})`,
       );
     }
+    validateFiniteWeights(input.weights);
   }
 
   validateOptions(input);
@@ -195,9 +203,22 @@ const validateCsrInput = (input: LeidenCsrInput): void => {
           `(${input.weights.length} vs ${input.targets.length})`,
       );
     }
+    validateFiniteWeights(input.weights);
   }
 
   validateOptions(input);
+};
+
+// NaN / Infinity in weights would propagate through libleidenalg and surface
+// as a `quality: NaN` result, silently corrupting the partition score. Reject
+// at the boundary so the failure is visible.
+const validateFiniteWeights = (weights: Float64Array): void => {
+  for (let i = 0; i < weights.length; i++) {
+    const w = weights[i]!;
+    if (!Number.isFinite(w)) {
+      throw new RangeError(`weights[${i}] must be finite, got ${w}`);
+    }
+  }
 };
 
 const validateOptions = (input: LeidenInput | LeidenCsrInput): void => {

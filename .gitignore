@@ -12,6 +12,8 @@ build/
 *.so
 *.dll
 .cache/
+# Generated from package.json by scripts/write-version-header.mjs
+native/version_generated.h
 
 # OS / editor noise
 .DS_Store

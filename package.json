@@ -36,10 +36,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "install": "node scripts/build-deps.mjs && node-gyp rebuild",
+    "install": "node scripts/build-deps.mjs && node scripts/write-version-header.mjs && node-gyp rebuild",
     "build": "pnpm build:deps && pnpm build:native && pnpm build:ts",
     "build:deps": "node scripts/build-deps.mjs",
-    "build:native": "node-gyp rebuild",
+    "build:native": "node scripts/write-version-header.mjs && node-gyp rebuild",
     "build:ts": "tsc -p tsconfig.json",
     "clean": "node scripts/clean.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

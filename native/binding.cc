@@ -29,9 +29,13 @@
 #include <ModularityVertexPartition.h>
 #include <Optimiser.h>
 
+// Generated from package.json by scripts/write-version-header.mjs so the
+// native version stays in lock-step with the npm package version.
+#include "version_generated.h"
+
 namespace {
 
-constexpr const char* kAddonVersion = "0.0.1";
+constexpr const char* kAddonVersion = FAST_LEIDEN_VERSION;
 
 // ---------------------------------------------------------------------------
 // Small RAII helpers.
@@ -168,6 +172,19 @@ LeidenResultC RunLeidenJob(const LeidenJob& job) {
 // JS -> LeidenJob conversion. Validates and copies TypedArrays into vectors
 // owned by the job so we can hand them off to a worker thread safely.
 
+// Defence in depth: TS already rejects NaN / Infinity weights, but bypassing
+// the public API must not silently produce a quality=NaN result.
+bool ValidateFiniteWeights(Napi::Env env, const double* data, size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(data[i])) {
+      Napi::RangeError::New(env, "weights[i] must be finite")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
+  }
+  return true;
+}
+
 // Returns true on success. On failure, raises a JS exception and returns false
 // so the caller can short-circuit (consistent with ReadEdgeListJob / ReadCsrJob).
 bool ApplyOptions(Napi::Env env, Napi::Object& obj, LeidenJob& job) {
@@ -245,6 +262,7 @@ bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
           .ThrowAsJavaScriptException();
       return false;
     }
+    if (!ValidateFiniteWeights(env, weights.Data(), edge_count)) return false;
     job.weights.assign(weights.Data(), weights.Data() + edge_count);
     job.has_weights = true;
   }
@@ -323,6 +341,7 @@ bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
           .ThrowAsJavaScriptException();
       return false;
     }
+    if (!ValidateFiniteWeights(env, weights.Data(), edge_count)) return false;
     job.weights.assign(weights.Data(), weights.Data() + edge_count);
     job.has_weights = true;
   }
