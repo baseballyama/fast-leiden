@@ -109,14 +109,13 @@ CI fixes that go in with this cut:
   tarball-install and shallow-CI paths); on a full local clone
   upstream's own CMake handles versioning and the submodule stays
   clean.
-- **Prebuild + publish jobs are gated at the job level.** The earlier
-  step-level gating left every matrix entry spinning up a runner on
-  Release-PR runs, which broke on the Alpine `node:22-alpine`
-  container (no `bash`) and on the retired `macos-13` runner (the
-  `darwin-x64` row sat `queued` and, with `cancel-in-progress: false`,
-  blocked every later Release run from updating the Version Packages
-  PR). The new gating shows "Skipped" rows on Release-PR runs and
-  spins up real runners only on the publish path.
+- **Prebuild matrix step-level gating fixed.** The `Note Release-PR
+path` step's `shell: bash` died on the musl rows because
+  `node:22-alpine` doesn't ship bash until our `Install Alpine build
+deps` step adds it; we now use `shell: sh` for that note step so the
+  matrix label renders cleanly on Release-PR runs (without the
+  job-level `if:` that would have collapsed the matrix UI to a literal
+  `Prebuild ${{ matrix.artifact }}` row).
 - **`darwin-x64` dropped from the prebuild matrix.** macos-13 retire +
   free macOS runners being arm64-only meant the row could never
   succeed. Intel Mac users now get the source-build path; see
