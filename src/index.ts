@@ -21,12 +21,17 @@ export const version = (): string => native.version();
  */
 export const leiden = (input: LeidenInput): LeidenResult => {
   validateEdgeListInput(input);
-  // The native call is wired up in a later roadmap step. The stub keeps the
-  // public type surface stable so consumers can write code against it now.
-  throw new Error(
-    "leiden(): native implementation is not wired up yet. " +
-      "See CLAUDE.md for the roadmap.",
-  );
+  return native.leidenFromEdgeList({
+    nodeCount: input.nodeCount,
+    sources: input.sources,
+    targets: input.targets,
+    weights: input.weights,
+    qualityFunction: input.qualityFunction,
+    resolution: input.resolution,
+    maxIterations: input.maxIterations,
+    seed: input.seed,
+    directed: input.directed,
+  });
 };
 
 /**
@@ -35,10 +40,17 @@ export const leiden = (input: LeidenInput): LeidenResult => {
  */
 export const leidenFromCsr = (input: LeidenCsrInput): LeidenResult => {
   validateCsrInput(input);
-  throw new Error(
-    "leidenFromCsr(): native implementation is not wired up yet. " +
-      "See CLAUDE.md for the roadmap.",
-  );
+  return native.leidenFromCsr({
+    nodeCount: input.nodeCount,
+    offsets: input.offsets,
+    targets: input.targets,
+    weights: input.weights,
+    qualityFunction: input.qualityFunction,
+    resolution: input.resolution,
+    maxIterations: input.maxIterations,
+    seed: input.seed,
+    directed: input.directed,
+  });
 };
 
 // --- Validation -----------------------------------------------------------

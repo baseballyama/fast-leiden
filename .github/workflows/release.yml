@@ -65,14 +65,19 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Cache vendor build-deps
+        uses: actions/cache@v4
+        with:
+          path: vendor/build-deps
+          key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.sh') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
+
       - run: pnpm install --frozen-lockfile
 
-      # Run the gates one more time before publishing — the release workflow is
-      # the last line of defense.
+      # Build first — the native addon must exist before tests can load it.
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
-      - run: pnpm build
 
       - name: Create Release PR or publish to npm
         id: changesets

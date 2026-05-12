@@ -5,7 +5,8 @@
 `fast-leiden` is a Node.js native addon that exposes the Leiden
 community-detection algorithm. It wraps the C/C++ reference implementations of
 [`igraph`](https://igraph.org/) and
-[`leidenalg`](https://github.com/vtraag/leidenalg) via N-API.
+[`libleidenalg`](https://github.com/vtraag/libleidenalg) (the C++ core
+extracted from [`leidenalg`](https://github.com/vtraag/leidenalg)) via N-API.
 
 **Why this exists.** Running Leiden from a Node.js server currently means
 spawning a Python worker around `python-igraph` + `leidenalg`. That works, but
@@ -17,11 +18,14 @@ for every call. `fast-leiden` collapses that into an in-process native call.
 - **Language**: TypeScript (public API) + C++17 (native addon)
 - **Native binding**: [N-API](https://nodejs.org/api/n-api.html) via
   [`node-addon-api`](https://github.com/nodejs/node-addon-api)
-- **Build**: [`node-gyp`](https://github.com/nodejs/node-gyp) (may migrate to
-  CMake if the upstream build becomes the bottleneck)
+- **Build**: CMake for the upstream C/C++ deps (`vendor/igraph`,
+  `vendor/libleidenalg`), driven by `scripts/build-deps.sh`. The N-API addon
+  itself is built with [`node-gyp`](https://github.com/nodejs/node-gyp) and
+  links against the static libs produced by CMake.
 - **Package manager**: pnpm
 - **Tests**: vitest
-- **C/C++ references**: `vendor/igraph` and `vendor/leidenalg` as git submodules
+- **C/C++ references**: `vendor/igraph` and `vendor/libleidenalg` as git
+  submodules
 
 ## Domain rules
 
@@ -37,23 +41,26 @@ for every call. `fast-leiden` collapses that into an in-process native call.
 - **CSR is the primary path for large graphs.** Edge-list input is the
   user-friendly entry point; CSR is the performance-oriented one. Both stay,
   because they target different use cases — this is not a parallel API.
-- **License is GPL-3.0-or-later.** `igraph` is GPL-2.0-or-later, `leidenalg`
+- **License is GPL-3.0-or-later.** `igraph` is GPL-2.0-or-later, `libleidenalg`
   is GPL-3.0-or-later. The combined work follows GPL-3.0-or-later. Any new
   dependency must be license-compatible.
 
-## Implementation roadmap
+## Implementation status
 
-Tracked steps (see README for the full plan):
-
-1. Scaffold — package layout, build files, CI, templates. (in progress)
-2. Submodules — `vendor/igraph`, `vendor/leidenalg`.
-3. Native addon smoke test — `version()` callable from TS.
-4. TypedArray inputs — `Uint32Array` / `Float64Array` validation and zero-copy
-   read on the native side.
-5. Build `igraph_t` from TypedArray edge list / CSR.
-6. Call `leidenalg`, return `membership` as a `Uint32Array`.
-7. Tests: tiny graphs, weighted edges, invalid inputs, deterministic seed.
-8. Benchmark against the Python `igraph + leidenalg` baseline.
+1. **Scaffold** — done.
+2. **Submodules** — `vendor/igraph`, `vendor/libleidenalg`. (`leidenalg`
+   itself is only the Python wrapper; the C++ core was split out into
+   `libleidenalg`.)
+3. **Native addon smoke test** — `version()` callable from TS. Done.
+4. **TypedArray inputs** — done. JS-side validation + zero-copy read via
+   `Napi::Uint32Array::Data()` / `Napi::Float64Array::Data()`.
+5. **Build `igraph_t` from TypedArrays** — done for both edge-list and CSR.
+6. **Call libleidenalg `Optimiser`** — done. Modularity + CPM partition
+   types are exposed; membership is returned as a `Uint32Array`.
+7. **Tests** — done: two-triangle graph (edge list + CSR), weighted edges,
+   deterministic seed, invalid-input validation.
+8. **Benchmark against the Python `igraph + leidenalg` baseline** — still
+   TODO. `bench/basic.ts` is a placeholder.
 
 ---
 

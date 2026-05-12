@@ -1,4 +1,7 @@
 {
+  "variables": {
+    "deps_root": "<(module_root_dir)/vendor/build-deps/install"
+  },
   "targets": [
     {
       "target_name": "fast_leiden",
@@ -6,27 +9,43 @@
         "native/binding.cc"
       ],
       "include_dirs": [
-        "<!@(node -p \"require('node-addon-api').include\")"
+        "<!@(node -p \"require('node-addon-api').include\")",
+        "<(deps_root)/include",
+        "<(deps_root)/include/libleidenalg"
       ],
       "dependencies": [
         "<!(node -p \"require('node-addon-api').gyp\")"
       ],
+      "libraries": [
+        "<(deps_root)/lib/liblibleidenalg.a",
+        "<(deps_root)/lib/libigraph.a"
+      ],
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
-      "cflags_cc": ["-std=c++17"],
-      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
-      "xcode_settings": {
-        "GCC_ENABLE_CPP_EXCEPTIONS": "NO",
-        "CLANG_CXX_LIBRARY": "libc++",
-        "CLANG_CXX_LANGUAGE_STANDARD": "c++17",
-        "MACOSX_DEPLOYMENT_TARGET": "11.0"
-      },
-      "msvs_settings": {
-        "VCCLCompilerTool": {
-          "ExceptionHandling": 0,
-          "AdditionalOptions": ["/std:c++17"]
-        }
-      }
+      "cflags_cc": ["-std=c++17", "-fexceptions"],
+      "defines": [],
+      "conditions": [
+        ["OS=='mac'", {
+          "xcode_settings": {
+            "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
+            "CLANG_CXX_LIBRARY": "libc++",
+            "CLANG_CXX_LANGUAGE_STANDARD": "c++17",
+            "MACOSX_DEPLOYMENT_TARGET": "11.0",
+            "OTHER_CFLAGS": ["-fexceptions"]
+          }
+        }],
+        ["OS=='linux'", {
+          "ldflags": ["-Wl,--exclude-libs,ALL"]
+        }],
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1,
+              "AdditionalOptions": ["/std:c++17", "/EHsc"]
+            }
+          }
+        }]
+      ]
     }
   ]
 }

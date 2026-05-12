@@ -6,8 +6,40 @@ import { join } from "node:path";
 // files. The compiled artifact lives in `build/Release/` after node-gyp runs.
 const requireFromHere = createRequire(__filename);
 
+export interface NativeLeidenInput {
+  nodeCount: number;
+  sources: Uint32Array;
+  targets: Uint32Array;
+  weights?: Float64Array;
+  qualityFunction?: string;
+  resolution?: number;
+  maxIterations?: number;
+  seed?: number;
+  directed?: boolean;
+}
+
+export interface NativeLeidenCsrInput {
+  nodeCount: number;
+  offsets: Uint32Array;
+  targets: Uint32Array;
+  weights?: Float64Array;
+  qualityFunction?: string;
+  resolution?: number;
+  maxIterations?: number;
+  seed?: number;
+  directed?: boolean;
+}
+
+export interface NativeLeidenResult {
+  membership: Uint32Array;
+  quality: number;
+  iterations: number;
+}
+
 interface NativeBinding {
   version(): string;
+  leidenFromEdgeList(input: NativeLeidenInput): NativeLeidenResult;
+  leidenFromCsr(input: NativeLeidenCsrInput): NativeLeidenResult;
 }
 
 const bindingPath = join(

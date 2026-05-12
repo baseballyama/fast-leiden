@@ -1,9 +1,9 @@
 name: CI
 
 # Quality gate for fast-leiden. The project is a native Node.js addon that
-# wraps igraph + leidenalg, so CI needs to (a) check out the upstream
-# submodules and (b) be able to build the C/C++ code on every supported
-# Node.js version.
+# wraps igraph + libleidenalg, so CI needs to (a) check out the upstream
+# submodules, (b) build the C/C++ deps via CMake, and (c) build the addon
+# itself on every supported Node.js version.
 
 on:
   push:
@@ -19,8 +19,6 @@ permissions:
   contents: read
 
 jobs:
-  # Cheap, single-version gate. Catches typing / lint / format violations
-  # before the test matrix spins up.
   static:
     name: Static checks
     runs-on: ubuntu-latest
@@ -35,6 +33,12 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Cache vendor build-deps
+        uses: actions/cache@v4
+        with:
+          path: vendor/build-deps
+          key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.sh') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
+
       - run: pnpm install --frozen-lockfile
 
       - name: Format check
@@ -46,11 +50,9 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
-      - name: Build (TypeScript + native addon)
+      - name: Build (deps + native addon + TypeScript)
         run: pnpm build
 
-  # Multi-version test matrix. Each runner builds the native addon against
-  # its own Node.js ABI before running the test suite.
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.os }})
     needs: static
@@ -70,6 +72,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
+
+      - name: Cache vendor build-deps
+        uses: actions/cache@v4
+        with:
+          path: vendor/build-deps
+          key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.sh') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build

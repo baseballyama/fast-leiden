@@ -29,7 +29,8 @@
     "dist",
     "native",
     "vendor/igraph",
-    "vendor/leidenalg",
+    "vendor/libleidenalg",
+    "scripts/build-deps.sh",
     "binding.gyp",
     "LICENSE",
     "README.md"
@@ -38,10 +39,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "pnpm build:native && pnpm build:ts",
+    "build": "pnpm build:deps && pnpm build:native && pnpm build:ts",
+    "build:deps": "bash scripts/build-deps.sh",
     "build:native": "node-gyp rebuild",
     "build:ts": "tsc -p tsconfig.json",
-    "clean": "rimraf dist build",
+    "clean": "rimraf dist build vendor/build-deps",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
