@@ -175,15 +175,20 @@ jobs:
 
       # Alpine doesn't ship the build toolchain prebuildify needs. Install
       # them before the rest of the actions run — pnpm/action-setup pulls
-      # in via curl which also needs the package manager seeded.
+      # in via curl which also needs the package manager seeded. `bison` +
+      # `flex` are required because igraph's `src/CMakeLists.txt` invokes
+      # `bison_target()` / `flex_target()` unconditionally (same reason as
+      # Windows, see the matching choco step further down).
       - name: Install Alpine build deps
         if: needs.check.outputs.hasChangesets == 'false' && matrix.libc == 'musl'
         shell: sh
         run: |
           apk add --no-cache \
             bash \
+            bison \
             build-base \
             cmake \
+            flex \
             git \
             linux-headers \
             python3 \
