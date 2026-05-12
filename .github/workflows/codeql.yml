@@ -42,7 +42,7 @@ jobs:
         language: ["c-cpp", "javascript-typescript"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -54,10 +54,24 @@ jobs:
           # `security` pack is the default and we explicitly want the
           # extra ones for a GPL native addon touching raw pointers.
           queries: security-extended
+          # Exclude vendored upstream sources (igraph + libleidenalg) and
+          # generated / dependency trees from analysis. CodeQL still needs
+          # to OBSERVE the vendor compiler invocations during the build
+          # trace (otherwise our `native/binding.cc` calls would have
+          # unresolved symbols), but we don't want alerts filed against
+          # third-party code we don't maintain.
+          config: |
+            paths-ignore:
+              - 'vendor/**'
+              - 'node_modules/**'
+              - 'build/**'
+              - 'dist/**'
+              - 'prebuilds/**'
+              - 'coverage/**'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: matrix.language == 'c-cpp'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: matrix.language == 'c-cpp'
         with:
           node-version: 24

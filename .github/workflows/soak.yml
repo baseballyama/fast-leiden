@@ -55,18 +55,18 @@ jobs:
           - os: macos-latest
             target: darwin-arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
 
       - name: Cache vendor build-deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
@@ -102,7 +102,7 @@ jobs:
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: soak-${{ matrix.target }}
           path: soak-summary.json

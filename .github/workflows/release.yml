@@ -43,8 +43,8 @@ concurrency:
 # glibc + musl share a directory (libc tag goes in the filename via
 # prebuildify --tag-libc), so the two lists differ in length.
 env:
-  PREBUILD_ARTIFACTS: "linux-x64-glibc linux-x64-musl linux-arm64-glibc linux-arm64-musl darwin-arm64 darwin-x64 win32-x64"
-  PREBUILD_DIRS: "linux-x64 linux-arm64 darwin-arm64 darwin-x64 win32-x64"
+  PREBUILD_ARTIFACTS: "linux-x64-glibc linux-x64-musl linux-arm64-glibc linux-arm64-musl darwin-arm64 win32-x64"
+  PREBUILD_DIRS: "linux-x64 linux-arm64 darwin-arm64 win32-x64"
 
 jobs:
   check:
@@ -53,7 +53,7 @@ jobs:
     outputs:
       hasChangesets: ${{ steps.check.outputs.hasChangesets }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: check
         shell: bash
@@ -76,12 +76,12 @@ jobs:
     if: needs.check.outputs.hasChangesets == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -102,13 +102,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   prebuild:
-    # The job is NOT gated by `if:` at the job level — that would skip
-    # matrix expansion and GitHub's UI would show a literal
-    # `Prebuild ${{ matrix.target }}` row, which is confusing. Instead we
-    # always run the matrix and gate the actual work at the step level.
-    # On Release-PR runs (hasChangesets='true') every step is skipped and
-    # the runner spends ~10s spinning up and quitting per matrix entry —
-    # cheap compared to the alternative of an opaque UI.
+    # Gated at the job level on the non-Release-PR path. The earlier
+    # step-level gating (which kept the matrix UI populated on every push)
+    # backfired in two ways: (a) the Alpine container for the Linux musl
+    # rows still spun up and the first step's `shell: bash` died with
+    # `exec: "bash": executable file not found`, and (b) the macos-13
+    # runner the darwin-x64 row needs has been retired by GitHub, so the
+    # row sat `queued` indefinitely and (with `cancel-in-progress: false`)
+    # held the concurrency slot, blocking every later release run. The
+    # readability cost is one extra "Skipped" row per platform on
+    # Release-PR runs — acceptable; the brokenness it replaces was not.
+    if: needs.check.outputs.hasChangesets == 'false'
     name: Prebuild ${{ matrix.artifact }}
     needs: check
     runs-on: ${{ matrix.os }}
@@ -149,29 +153,23 @@ jobs:
             container: ""
             target: darwin-arm64
             libc: ""
-          - artifact: darwin-x64
-            os: macos-13
-            container: ""
-            target: darwin-x64
-            libc: ""
+          # darwin-x64 (Intel Mac) is intentionally not in the prebuild
+          # matrix. GitHub retired `macos-13` runners and the modern free
+          # `macos-latest` is arm64-only; cross-compiling from arm64 to
+          # x86_64 works but the test step can't validate the binary
+          # without Rosetta on a self-hosted runner. Intel Mac users are
+          # served by the Tier 2 source-build path documented in README.
           - artifact: win32-x64
             os: windows-latest
             container: ""
             target: win32-x64
             libc: ""
     steps:
-      - name: Note Release-PR path (skipping prebuild)
-        if: needs.check.outputs.hasChangesets == 'true'
-        shell: bash
-        run: |
-          echo "Pending changesets exist; this run only opens the Release PR."
-          echo "No prebuild for ${{ matrix.artifact }} on this push."
-
       # Alpine doesn't ship the build toolchain prebuildify needs. Install
       # them before the rest of the actions run — pnpm/action-setup pulls
       # in via curl which also needs the package manager seeded.
       - name: Install Alpine build deps
-        if: needs.check.outputs.hasChangesets == 'false' && matrix.libc == 'musl'
+        if: matrix.libc == 'musl'
         shell: sh
         run: |
           apk add --no-cache \
@@ -183,16 +181,12 @@ jobs:
             python3 \
             curl
 
-      - uses: actions/checkout@v4
-        if: needs.check.outputs.hasChangesets == 'false'
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: pnpm/action-setup@v4
-        if: needs.check.outputs.hasChangesets == 'false'
-
-      - uses: actions/setup-node@v4
-        if: needs.check.outputs.hasChangesets == 'false'
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -200,7 +194,7 @@ jobs:
       # Windows runners don't include bison / flex. See the matching
       # step in ci.yml for the full rationale.
       - name: Install bison + flex (Windows)
-        if: needs.check.outputs.hasChangesets == 'false' && matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           choco install --no-progress -y winflexbison3
@@ -212,10 +206,8 @@ jobs:
           echo "$dir" >> $env:GITHUB_PATH
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
-        if: needs.check.outputs.hasChangesets == 'false'
 
       - name: Build prebuild
-        if: needs.check.outputs.hasChangesets == 'false'
         env:
           # When this is a libc-tagged build, point prebuildify at it so
           # the artifact file lands as `<name>.<libc>.node` and
@@ -224,8 +216,7 @@ jobs:
         run: pnpm run prebuild
 
       - name: Upload prebuild artifact
-        if: needs.check.outputs.hasChangesets == 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prebuild-${{ matrix.artifact }}
           path: prebuilds/${{ matrix.target }}/
@@ -235,46 +226,34 @@ jobs:
   publish:
     name: Publish to npm
     needs: [check, prebuild]
-    # Same pattern as `prebuild`: never gate at the job level, gate at the
-    # step level. Skipped Publish-to-npm rows now stay readable in the UI.
+    # Gated at the job level on the non-Release-PR path. See the prebuild
+    # job for why we no longer keep "skipped" rows visible in the UI.
+    if: needs.check.outputs.hasChangesets == 'false'
     runs-on: ubuntu-latest
     steps:
-      - name: Note Release-PR path (skipping publish)
-        if: needs.check.outputs.hasChangesets == 'true'
-        shell: bash
-        run: echo "Pending changesets exist; nothing to publish on this push."
-
-      - uses: actions/checkout@v4
-        if: needs.check.outputs.hasChangesets == 'false'
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: recursive
 
-      - uses: pnpm/action-setup@v4
-        if: needs.check.outputs.hasChangesets == 'false'
-
-      - uses: actions/setup-node@v4
-        if: needs.check.outputs.hasChangesets == 'false'
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
-        if: needs.check.outputs.hasChangesets == 'false'
 
       - name: Build TypeScript output
-        if: needs.check.outputs.hasChangesets == 'false'
         run: pnpm build:ts
 
       - name: Download every prebuild artifact
-        if: needs.check.outputs.hasChangesets == 'false'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: prebuilds-staging
           pattern: prebuild-*
 
       - name: Stage prebuilds at prebuilds/<dir>/
-        if: needs.check.outputs.hasChangesets == 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -293,7 +272,6 @@ jobs:
           ls -la prebuilds/
 
       - name: Verify every artifact + directory is present
-        if: needs.check.outputs.hasChangesets == 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -331,14 +309,12 @@ jobs:
           echo "All directories present: ${PREBUILD_DIRS}"
 
       - name: Inspect tarball contents (sanity check)
-        if: needs.check.outputs.hasChangesets == 'false'
         run: |
           pnpm pack --pack-destination /tmp
           ls -la /tmp/fast-leiden-*.tgz
           tar -tzf /tmp/fast-leiden-*.tgz | grep '^package/prebuilds/'
 
       - name: Generate SBOM (CycloneDX)
-        if: needs.check.outputs.hasChangesets == 'false'
         # Produces a CycloneDX 1.5 JSON for the production dependency tree.
         # We upload it both as a workflow artifact (365-day retention) and as
         # a GitHub Release asset (permanent, public — see the "Attach SBOM to
@@ -355,8 +331,7 @@ jobs:
           node -e "const s=require('./sbom.cdx.json'); console.log('SBOM components:', (s.components||[]).length, 'serial:', s.serialNumber);"
 
       - name: Upload SBOM artifact
-        if: needs.check.outputs.hasChangesets == 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-cdx
           path: sbom.cdx.json
@@ -365,7 +340,6 @@ jobs:
 
       - name: Publish via changesets
         id: publish
-        if: needs.check.outputs.hasChangesets == 'false'
         uses: changesets/action@v1
         with:
           # Skip `pnpm release` (which would re-run `pnpm build` and
@@ -384,7 +358,7 @@ jobs:
         # The action exposes `published` ('true'/'false' string) and
         # `publishedPackages` for that case. For our single-package repo the
         # release tag is `v<version>` (changesets default).
-        if: needs.check.outputs.hasChangesets == 'false' && steps.publish.outputs.published == 'true'
+        if: steps.publish.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -32,7 +32,9 @@ What 1.0 newly guarantees on top of the existing behaviour:
 - **Tier 1 / Tier 2 / unsupported platforms are spelled out.** Tier 1
   means prebuilt binaries and full CI; Tier 2 falls through to source
   build (best-effort); unsupported targets get no help. A regression
-  on any Tier 1 target blocks a release.
+  on any Tier 1 target blocks a release. `darwin-x64` (Intel Mac) is
+  Tier 2 because GitHub retired the `macos-13` runner; users build from
+  source.
 
 New quality gates that land with 1.0:
 
@@ -107,3 +109,34 @@ CI fixes that go in with this cut:
   tarball-install and shallow-CI paths); on a full local clone
   upstream's own CMake handles versioning and the submodule stays
   clean.
+- **Prebuild + publish jobs are gated at the job level.** The earlier
+  step-level gating left every matrix entry spinning up a runner on
+  Release-PR runs, which broke on the Alpine `node:22-alpine`
+  container (no `bash`) and on the retired `macos-13` runner (the
+  `darwin-x64` row sat `queued` and, with `cancel-in-progress: false`,
+  blocked every later Release run from updating the Version Packages
+  PR). The new gating shows "Skipped" rows on Release-PR runs and
+  spins up real runners only on the publish path.
+- **`darwin-x64` dropped from the prebuild matrix.** macos-13 retire +
+  free macOS runners being arm64-only meant the row could never
+  succeed. Intel Mac users now get the source-build path; see
+  README "Support tiers".
+- **CodeQL excludes `vendor/`.** The vendored igraph + libleidenalg
+  sources are still observed during the build trace (CodeQL needs
+  them to resolve symbols), but findings against them aren't filed
+  against us. `node_modules`, `build`, `dist`, `prebuilds`, and
+  `coverage` are excluded for the same reason.
+- **`.github/dependabot.yml` removed.** It was a leftover template
+  stub with an empty `package-ecosystem` value that failed the
+  Dependabot config check on every push. `renovate.json` is the
+  active dep updater.
+- **Bulk-bumped non-major npm deps + first-party GitHub Actions to
+  current majors.** node-addon-api ^8.2.0 → ^8.7.0, @changesets/cli
+  ^2.27.10 → ^2.31.0, @types/node ^24.0.0 → ^24.12.4, @vitest/coverage-v8
+  - vitest ^2.1.6 → ^2.1.9, node-gyp ^11.0.0 → ^11.5.0, packageManager
+    pnpm@9.15.0 → 9.15.9; actions/checkout @v4 → @v6, actions/setup-node
+    @v4 → @v6, actions/cache @v4 → @v5, actions/upload-artifact @v4 →
+    @v7, actions/download-artifact @v4 → @v8, actions/github-script @v7
+    → @v9, pnpm/action-setup @v4 → @v6, peter-evans/create-pull-request
+    @v7 → @v8. Resolves the Node.js 20 deprecation warnings on every CI
+    run.

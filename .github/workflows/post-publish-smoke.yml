@@ -65,10 +65,9 @@ jobs:
             os: macos-latest
             container: ""
             node: "22"
-          - target: darwin-x64
-            os: macos-13
-            container: ""
-            node: "22"
+          # darwin-x64 (Intel Mac) is Tier 2 / source build; we don't
+          # ship a prebuild for it, so there is nothing to smoke-test
+          # via the registry path. See `release.yml` for the rationale.
           - target: win32-x64
             os: windows-latest
             container: ""
@@ -83,7 +82,7 @@ jobs:
         # Skip on Alpine — the container already provides Node 22. The
         # actions/setup-node action requires glibc and fails on musl.
         if: matrix.container == ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
 

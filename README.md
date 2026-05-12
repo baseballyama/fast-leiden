@@ -380,8 +380,9 @@ pnpm add fast-leiden
 ```
 
 On the [Tier 1 platforms](#supported-platforms) (`linux-x64` glibc/musl,
-`linux-arm64` glibc/musl, `darwin-arm64`, `darwin-x64`, `win32-x64`)
-install is a binary drop — no CMake, no C++ toolchain, no Python.
+`linux-arm64` glibc/musl, `darwin-arm64`, `win32-x64`) install is a binary
+drop — no CMake, no C++ toolchain, no Python. `darwin-x64` (Intel Mac) is
+**Tier 2** and falls through to the source build (CMake + node-gyp + Python).
 
 ### Install model
 
@@ -395,7 +396,7 @@ for the platforms in our release matrix:
 | `linux-arm64`   | glibc | ✅ prebuilt (AWS Graviton, ARM servers)    |
 | `linux-arm64`   | musl  | ✅ prebuilt (Alpine on ARM)                |
 | `darwin-arm64`  | —     | ✅ prebuilt (Apple Silicon)                |
-| `darwin-x64`    | —     | ✅ prebuilt (Intel Mac)                    |
+| `darwin-x64`    | —     | ⚠️ source build only (Intel Mac, Tier 2)   |
 | `win32-x64`     | —     | ✅ prebuilt                                |
 | `win32-arm64`,… |       | ❌ not yet — file an issue if you need one |
 
@@ -482,7 +483,6 @@ release.
 - `linux-x64` (glibc and musl)
 - `linux-arm64` (glibc and musl)
 - `darwin-arm64` (Apple Silicon)
-- `darwin-x64` (Intel Mac)
 - `win32-x64`
 - Node.js 22 / 24 / 26 (`engines.node` is `>=22`)
 
@@ -492,6 +492,11 @@ Python 3. We accept bug reports and will land fixes, but we don't gate
 releases on it. If a Tier 2 target stops building, we ship anyway and
 fix it in a follow-up patch release.
 
+- `darwin-x64` (Intel Mac). GitHub retired the `macos-13` runner, the
+  modern free macOS runner is arm64-only, and we don't currently
+  cross-compile or run a paid Intel runner. The source build still
+  works on an Intel Mac with Xcode CLT + CMake + Python 3; let us
+  know if a prebuild path matters for you and we'll prioritise it.
 - Node.js 20 and older 22.x point releases (`engines.node` is advisory;
   the addon is N-API so it _usually_ loads, but we don't run CI on it).
 - Linux distributions outside the libc set above (uClibc, etc.).
@@ -506,8 +511,8 @@ prebuild.
 - `win32-arm64`. GitHub Actions doesn't ship a free ARM Windows runner;
   this would need a self-hosted runner or a cross-compile path.
 - FreeBSD and other BSDs.
-- Cross-compilation targets that aren't on the Tier 1 matrix above
-  (e.g., building `darwin-x64` from `linux-arm64`).
+- Cross-compilation targets (e.g., building `darwin-x64` from
+  `linux-arm64`, or `linux-riscv64` from anywhere).
 
 ### CI matrices
 
@@ -540,7 +545,6 @@ refuses to publish unless every artifact produced a `*.node`:
 | `linux-arm64-glibc` | `ubuntu-24.04-arm` | —                | `glibc`  |
 | `linux-arm64-musl`  | `ubuntu-24.04-arm` | `node:22-alpine` | `musl`   |
 | `darwin-arm64`      | `macos-latest`     | —                | —        |
-| `darwin-x64`        | `macos-13`         | —                | —        |
 | `win32-x64`         | `windows-latest`   | —                | —        |
 
 The two `linux-<arch>-glibc` / `linux-<arch>-musl` artifacts both write

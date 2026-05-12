@@ -29,17 +29,16 @@ jobs:
             target: linux-x64
           - os: macos-latest
             target: darwin-arm64
-          - os: macos-13
-            target: darwin-x64
+          # darwin-x64 dropped: macos-13 runner retired by GitHub.
           - os: windows-latest
             target: win32-x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -64,7 +63,7 @@ jobs:
         run: pnpm run prebuild
 
       - name: Upload prebuild artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prebuild-${{ matrix.target }}
           path: prebuilds/${{ matrix.target }}/
@@ -88,17 +87,16 @@ jobs:
             target: linux-x64
           - os: macos-latest
             target: darwin-arm64
-          - os: macos-13
-            target: darwin-x64
+          # darwin-x64 dropped: macos-13 runner retired by GitHub.
           - os: windows-latest
             target: win32-x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -109,7 +107,7 @@ jobs:
         run: pnpm build:ts
 
       - name: Download platform prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: prebuild-${{ matrix.target }}
           path: prebuilds/${{ matrix.target }}/
