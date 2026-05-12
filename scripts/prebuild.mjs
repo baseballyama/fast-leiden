@@ -48,5 +48,16 @@ run(process.execPath, [resolve(ROOT, "scripts/write-version-header.mjs")]);
 // and --strip so we don't publish debug symbols. Call the bin.js directly
 // via Node so we don't depend on a particular package manager's shim layout
 // (npx / pnpm exec / yarn run all differ slightly).
+//
+// `--tag-libc` is added on Linux glibc / musl builds (driven by the env
+// var the CI workflow sets) so glibc and musl binaries can coexist in the
+// same `prebuilds/linux-<arch>/` directory. node-gyp-build picks the one
+// matching the consumer's libc at runtime.
+const prebuildArgs = [resolve(ROOT, "node_modules/prebuildify/bin.js"), "--napi", "--strip"];
+const libc = process.env.PREBUILDIFY_LIBC ?? "";
+if (libc) {
+  prebuildArgs.push("--tag-libc");
+  log(`tagging libc as ${libc}`);
+}
 log("running prebuildify");
-run(process.execPath, [resolve(ROOT, "node_modules/prebuildify/bin.js"), "--napi", "--strip"]);
+run(process.execPath, prebuildArgs);

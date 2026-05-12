@@ -1,0 +1,109 @@
+name: Soak
+
+# Weekly large-graph soak test.
+#
+# Runs `bench/soak.ts` on a stochastic block model graph that's far bigger
+# than anything in `pnpm test`. The point is to catch performance
+# regressions and memory blow-ups that only show up at scale — running this
+# on every PR would slow the main CI matrix to a crawl, so it lives on a
+# weekly cron instead.
+#
+# Each run writes a `soak-summary.json` and uploads it as an artifact. The
+# job also dumps the same summary into the GitHub Actions job summary so
+# you can scan results without downloading.
+#
+# Trigger via workflow_dispatch with custom inputs when you want to
+# investigate a specific regression on demand.
+
+on:
+  schedule:
+    # Sundays 12:00 UTC — pick a quiet time so it doesn't compete with the
+    # release / vendor-update workflows.
+    - cron: "0 12 * * 0"
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: "SBM block count"
+        default: "20"
+      per_block:
+        description: "Nodes per block"
+        default: "2500"
+      p_in:
+        description: "Within-block edge probability"
+        default: "0.02"
+      p_out:
+        description: "Cross-block edge probability"
+        default: "0.0001"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: Soak ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-latest
+            target: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Cache vendor build-deps
+        uses: actions/cache@v4
+        with:
+          path: vendor/build-deps
+          key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run soak
+        env:
+          BLOCKS: ${{ github.event.inputs.blocks || '20' }}
+          PER_BLOCK: ${{ github.event.inputs.per_block || '2500' }}
+          P_IN: ${{ github.event.inputs.p_in || '0.02' }}
+          P_OUT: ${{ github.event.inputs.p_out || '0.0001' }}
+        shell: bash
+        run: |
+          pnpm soak \
+            --blocks="$BLOCKS" \
+            --per-block="$PER_BLOCK" \
+            --p-in="$P_IN" \
+            --p-out="$P_OUT" \
+            --out=soak-summary.json
+
+      - name: Render summary
+        shell: bash
+        run: |
+          {
+            echo "## Soak summary — ${{ matrix.target }}"
+            echo ""
+            echo "\`\`\`json"
+            cat soak-summary.json
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ matrix.target }}
+          path: soak-summary.json
+          retention-days: 90

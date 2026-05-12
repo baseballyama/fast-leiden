@@ -261,13 +261,16 @@ Python.
 The npm tarball ships **prebuilt binaries via [`prebuildify`](https://github.com/prebuild/prebuildify)**
 for the platforms in our release matrix:
 
-| Platform               | Status                                     |
-| ---------------------- | ------------------------------------------ |
-| `linux-x64`            | ✅ prebuilt                                |
-| `darwin-arm64`         | ✅ prebuilt                                |
-| `darwin-x64`           | ✅ prebuilt                                |
-| `win32-x64`            | ✅ prebuilt                                |
-| `linux-arm64`, musl, … | ❌ not yet — file an issue if you need one |
+| Platform        | libc  | Status                                     |
+| --------------- | ----- | ------------------------------------------ |
+| `linux-x64`     | glibc | ✅ prebuilt                                |
+| `linux-x64`     | musl  | ✅ prebuilt (Alpine / distroless musl)     |
+| `linux-arm64`   | glibc | ✅ prebuilt (AWS Graviton, ARM servers)    |
+| `linux-arm64`   | musl  | ✅ prebuilt (Alpine on ARM)                |
+| `darwin-arm64`  | —     | ✅ prebuilt (Apple Silicon)                |
+| `darwin-x64`    | —     | ✅ prebuilt (Intel Mac)                    |
+| `win32-x64`     | —     | ✅ prebuilt                                |
+| `win32-arm64`,… |       | ❌ not yet — file an issue if you need one |
 
 `scripts/install.mjs` runs as the `install` lifecycle script. It looks for a
 prebuild matching the current `<platform>-<arch>` via
@@ -359,22 +362,30 @@ it into a fresh project, and runs a smoke test on `ubuntu-latest` and
 **Prebuild + publish matrix**
 ([`release.yml`](./.github/workflows/release.yml)) — runs the prebuild
 matrix on every push to `main` once the Version Packages PR merges, and
-refuses to publish unless every target produced a `*.node`:
+refuses to publish unless every artifact produced a `*.node`:
 
-| Target         | Runner           | Notes                                                              |
-| -------------- | ---------------- | ------------------------------------------------------------------ |
-| `linux-x64`    | `ubuntu-latest`  | glibc                                                              |
-| `darwin-arm64` | `macos-latest`   | Apple Silicon                                                      |
-| `darwin-x64`   | `macos-13`       | Intel Mac, kept on the Intel runner specifically for this prebuild |
-| `win32-x64`    | `windows-latest` | MSVC                                                               |
+| Artifact            | Runner             | Container        | libc tag |
+| ------------------- | ------------------ | ---------------- | -------- |
+| `linux-x64-glibc`   | `ubuntu-latest`    | —                | `glibc`  |
+| `linux-x64-musl`    | `ubuntu-latest`    | `node:22-alpine` | `musl`   |
+| `linux-arm64-glibc` | `ubuntu-24.04-arm` | —                | `glibc`  |
+| `linux-arm64-musl`  | `ubuntu-24.04-arm` | `node:22-alpine` | `musl`   |
+| `darwin-arm64`      | `macos-latest`     | —                | —        |
+| `darwin-x64`        | `macos-13`         | —                | —        |
+| `win32-x64`         | `windows-latest`   | —                | —        |
+
+The two `linux-<arch>-glibc` / `linux-<arch>-musl` artifacts both write
+into `prebuilds/linux-<arch>/`; their files are disambiguated by the libc
+tag prebuildify appends (`.glibc.node` vs `.musl.node`), and
+node-gyp-build picks the right one at runtime by sniffing the consumer's
+libc.
 
 Not on the matrix today — these fall through to the source-build install
 path and need CMake + a C++17 toolchain + Python at install time:
 
-- **Linux musl** (Alpine, distroless musl images). The source build should
-  work with a musl C++17 toolchain, but it's not gated on each commit.
-- **Linux arm64**.
-- **FreeBSD, other BSDs**.
+- **Windows arm64.** GitHub Actions doesn't ship a free ARM Windows
+  runner; would need a self-hosted runner or cross-compile.
+- **FreeBSD, other BSDs.**
 
 If you depend on one of these, please open an issue with the runner and
 toolchain version you use; we'd rather add the target than tell you to
@@ -458,10 +469,10 @@ fast-leiden/
 ## Known limitations
 
 - **Source build needed off the prebuild matrix.** Prebuilds cover
-  `linux-x64`, `darwin-arm64`, `darwin-x64`, and `win32-x64`. Other targets
-  (Linux arm64, musl, FreeBSD …) fall through to the source build at install
-  time and need CMake + a C++17 toolchain + Python. See
-  [Install model](#install-model).
+  Linux x64 (glibc + musl), Linux arm64 (glibc + musl), macOS arm64,
+  macOS x64, and Windows x64. Other targets (Windows arm64, FreeBSD, …)
+  fall through to the source build at install time and need CMake + a
+  C++17 toolchain + Python. See [Install model](#install-model).
 - **Async input copy is synchronous.** The Leiden optimisation itself runs on
   a worker thread, but the JS→C++ copy of `sources`, `targets`, and `weights`
   happens on the JS thread before the worker is queued. For multi-million

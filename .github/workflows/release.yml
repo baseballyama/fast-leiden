@@ -36,8 +36,15 @@ concurrency:
 
 # Matrix kept in one place so prebuild + publish can't drift apart. Mirror
 # this in README "Install model" if you add or remove a target.
+#
+# PREBUILD_ARTIFACTS is the list of artifact names produced by the
+# matrix below — one entry per matrix combination. PREBUILD_DIRS is the
+# distinct list of `prebuilds/<dir>/` outputs in the final tarball; Linux
+# glibc + musl share a directory (libc tag goes in the filename via
+# prebuildify --tag-libc), so the two lists differ in length.
 env:
-  PREBUILD_TARGETS: "linux-x64 darwin-arm64 darwin-x64 win32-x64"
+  PREBUILD_ARTIFACTS: "linux-x64-glibc linux-x64-musl linux-arm64-glibc linux-arm64-musl darwin-arm64 darwin-x64 win32-x64"
+  PREBUILD_DIRS: "linux-x64 linux-arm64 darwin-arm64 darwin-x64 win32-x64"
 
 jobs:
   check:
@@ -100,11 +107,12 @@ jobs:
     # `Prebuild ${{ matrix.target }}` row, which is confusing. Instead we
     # always run the matrix and gate the actual work at the step level.
     # On Release-PR runs (hasChangesets='true') every step is skipped and
-    # the runner spends ~10s spinning up and quitting per target — cheap
-    # compared to the alternative of an opaque UI.
-    name: Prebuild ${{ matrix.target }}
+    # the runner spends ~10s spinning up and quitting per matrix entry —
+    # cheap compared to the alternative of an opaque UI.
+    name: Prebuild ${{ matrix.artifact }}
     needs: check
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
       # Any platform missing aborts the publish — we never want to ship a
       # tarball with a hole in the prebuild matrix that silently falls
@@ -112,21 +120,68 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - os: ubuntu-latest
+          # `artifact` is the per-target artifact name and also the row
+          # label in the GitHub UI. `target` is the prebuilds/<target>/
+          # directory prebuildify writes into; glibc and musl Linux builds
+          # share a directory but their filenames diverge via --tag-libc.
+          - artifact: linux-x64-glibc
+            os: ubuntu-latest
+            container: ""
             target: linux-x64
-          - os: macos-latest
+            libc: glibc
+          - artifact: linux-x64-musl
+            os: ubuntu-latest
+            container: node:22-alpine
+            target: linux-x64
+            libc: musl
+          - artifact: linux-arm64-glibc
+            os: ubuntu-24.04-arm
+            container: ""
+            target: linux-arm64
+            libc: glibc
+          - artifact: linux-arm64-musl
+            os: ubuntu-24.04-arm
+            container: node:22-alpine
+            target: linux-arm64
+            libc: musl
+          - artifact: darwin-arm64
+            os: macos-latest
+            container: ""
             target: darwin-arm64
-          - os: macos-13
+            libc: ""
+          - artifact: darwin-x64
+            os: macos-13
+            container: ""
             target: darwin-x64
-          - os: windows-latest
+            libc: ""
+          - artifact: win32-x64
+            os: windows-latest
+            container: ""
             target: win32-x64
+            libc: ""
     steps:
       - name: Note Release-PR path (skipping prebuild)
         if: needs.check.outputs.hasChangesets == 'true'
         shell: bash
         run: |
           echo "Pending changesets exist; this run only opens the Release PR."
-          echo "No prebuild for ${{ matrix.target }} on this push."
+          echo "No prebuild for ${{ matrix.artifact }} on this push."
+
+      # Alpine doesn't ship the build toolchain prebuildify needs. Install
+      # them before the rest of the actions run — pnpm/action-setup pulls
+      # in via curl which also needs the package manager seeded.
+      - name: Install Alpine build deps
+        if: needs.check.outputs.hasChangesets == 'false' && matrix.libc == 'musl'
+        shell: sh
+        run: |
+          apk add --no-cache \
+            bash \
+            build-base \
+            cmake \
+            git \
+            linux-headers \
+            python3 \
+            curl
 
       - uses: actions/checkout@v4
         if: needs.check.outputs.hasChangesets == 'false'
@@ -147,13 +202,18 @@ jobs:
 
       - name: Build prebuild
         if: needs.check.outputs.hasChangesets == 'false'
+        env:
+          # When this is a libc-tagged build, point prebuildify at it so
+          # the artifact file lands as `<name>.<libc>.node` and
+          # node-gyp-build can pick the right one at runtime.
+          PREBUILDIFY_LIBC: ${{ matrix.libc }}
         run: pnpm run prebuild
 
       - name: Upload prebuild artifact
         if: needs.check.outputs.hasChangesets == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: prebuild-${{ matrix.target }}
+          name: prebuild-${{ matrix.artifact }}
           path: prebuilds/${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 7
@@ -199,29 +259,53 @@ jobs:
           path: prebuilds-staging
           pattern: prebuild-*
 
-      - name: Stage prebuilds at prebuilds/<target>/
+      - name: Stage prebuilds at prebuilds/<dir>/
         if: needs.check.outputs.hasChangesets == 'false'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p prebuilds
           for d in prebuilds-staging/prebuild-*/; do
-            target="${d#prebuilds-staging/prebuild-}"
-            target="${target%/}"
+            artifact="${d#prebuilds-staging/prebuild-}"
+            artifact="${artifact%/}"
+            # Strip libc suffix from the artifact name to get the directory
+            # prebuilds/<dir>/ that node-gyp-build resolves at runtime.
+            # glibc + musl share a directory; libc tag is in the filename.
+            target="${artifact%-glibc}"
+            target="${target%-musl}"
             mkdir -p "prebuilds/${target}"
             mv "${d}"* "prebuilds/${target}/"
           done
           ls -la prebuilds/
 
-      - name: Verify every platform's prebuild is present
+      - name: Verify every artifact + directory is present
         if: needs.check.outputs.hasChangesets == 'false'
         shell: bash
         run: |
           set -euo pipefail
           missing=0
-          for target in $PREBUILD_TARGETS; do
-            if ! ls "prebuilds/${target}"/*.node >/dev/null 2>&1; then
-              echo "MISSING prebuild for ${target}"
+          # Every matrix entry must have produced a non-empty artifact.
+          for artifact in $PREBUILD_ARTIFACTS; do
+            if ! ls "prebuilds-staging/prebuild-${artifact}/"*.node >/dev/null 2>&1; then
+              echo "MISSING artifact: prebuild-${artifact}"
+              missing=1
+            fi
+          done
+          # Every published <prebuilds/dir>/ must end up with at least one
+          # .node file after staging. Catches a future rename mismatch in
+          # the staging step.
+          for dir in $PREBUILD_DIRS; do
+            if ! ls "prebuilds/${dir}"/*.node >/dev/null 2>&1; then
+              echo "MISSING staged prebuilds/${dir}/"
+              missing=1
+            fi
+          done
+          # Linux x64 and Linux arm64 must each carry BOTH a glibc and a
+          # musl binary so musl consumers (Alpine, distroless musl) don't
+          # silently fall through to the source build on either arch.
+          for arch in x64 arm64; do
+            if ! ls "prebuilds/linux-${arch}"/*.musl.node >/dev/null 2>&1; then
+              echo "MISSING musl-tagged binary under prebuilds/linux-${arch}/"
               missing=1
             fi
           done
@@ -229,7 +313,8 @@ jobs:
             echo "Refusing to publish: prebuild matrix is incomplete."
             exit 1
           fi
-          echo "All targets present: ${PREBUILD_TARGETS}"
+          echo "All artifacts present: ${PREBUILD_ARTIFACTS}"
+          echo "All directories present: ${PREBUILD_DIRS}"
 
       - name: Inspect tarball contents (sanity check)
         if: needs.check.outputs.hasChangesets == 'false'
