@@ -55,7 +55,12 @@ jobs:
 
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.os }})
-    needs: static
+    # No `needs: static` — GitHub Actions does not expand a matrix when the
+    # dependent job is skipped, so a `static` failure (format / lint /
+    # typecheck) would collapse the entire matrix into one literal
+    # `Test (Node ${{ matrix.node-version }} / ${{ matrix.os }}) — Skipped`
+    # row. Running the matrix in parallel with `static` costs a few extra
+    # minutes per failed push but keeps the run page readable.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -85,7 +90,6 @@ jobs:
 
   sanitizers:
     name: Sanitizers (ASan + UBSan, Linux)
-    needs: static
     runs-on: ubuntu-latest
     # The sanitizers job is the safety net for the C/C++ boundary. We rebuild
     # the addon with -fsanitize=address,undefined and run the regular test
@@ -130,12 +134,12 @@ jobs:
 
   pack-install:
     name: Tarball install (Node ${{ matrix.node-version }} / ${{ matrix.os }})
-    needs: static
     # The other jobs run against the source tree. This one validates the actual
     # artifact that ships to npm — `pnpm pack` produces the same tarball npm
     # would download, then a fresh empty project installs from it. Catches
     # `files` mis-globs, install-hook ordering bugs, and missing vendor sources
     # that show up only in tarball-install mode.
+    # `needs: static` is intentionally omitted — see the `test` job comment.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

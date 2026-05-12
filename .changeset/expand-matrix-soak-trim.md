@@ -20,6 +20,14 @@ trim the published tarball.
   own labelled row) and the actual work is gated step-by-step inside
   each entry. Same for the `publish` job.
 
+- **CI matrix UI fix.** `Test (Node … / …)` and `Tarball install
+(Node … / …)` no longer `needs: static`. GitHub Actions does not
+  expand a matrix when its dependency is skipped, so any `static`
+  failure (format / lint / typecheck) used to collapse all 9 + 4
+  matrix rows into one literal `${{ matrix.* }}` "Skipped" row. The
+  matrix now expands unconditionally; the extra parallel runs cost a
+  few CI minutes per failed push but keep the run page legible.
+
 - **Weekly soak workflow.** New `.github/workflows/soak.yml` (cron: every
   Sunday 12:00 UTC, also `workflow_dispatch`) runs `bench/soak.ts` on a
   large stochastic-block-model graph and uploads the wall-time / RSS
@@ -42,4 +50,4 @@ trim the published tarball.
   strips `v` prefix and `-N-gSHA` suffix, validates against
   `/^\d+(\.\d+){0,3}$/`, and falls back to the in-script constants.
   Stopped the Tarball-install CI job from dying with `VERSION
-  "d03122b" format invalid`.
+"d03122b" format invalid`.
