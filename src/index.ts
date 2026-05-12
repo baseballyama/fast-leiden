@@ -81,9 +81,7 @@ export const leidenAsync = (input: LeidenInput): Promise<LeidenResult> => {
 };
 
 /** Asynchronous CSR variant. See {@link leidenAsync}. */
-export const leidenFromCsrAsync = (
-  input: LeidenCsrInput,
-): Promise<LeidenResult> => {
+export const leidenFromCsrAsync = (input: LeidenCsrInput): Promise<LeidenResult> => {
   try {
     validateCsrInput(input);
   } catch (err) {
@@ -110,14 +108,10 @@ export const leidenFromCsrAsync = (
 
 const validateNodeCount = (nodeCount: number): void => {
   if (!Number.isInteger(nodeCount) || nodeCount < 0) {
-    throw new TypeError(
-      `nodeCount must be a non-negative integer, got ${nodeCount}`,
-    );
+    throw new TypeError(`nodeCount must be a non-negative integer, got ${nodeCount}`);
   }
   if (nodeCount > 0xffffffff) {
-    throw new RangeError(
-      `nodeCount must fit in a 32-bit unsigned integer, got ${nodeCount}`,
-    );
+    throw new RangeError(`nodeCount must fit in a 32-bit unsigned integer, got ${nodeCount}`);
   }
 };
 
@@ -201,9 +195,7 @@ const validateOptions = (input: LeidenInput | LeidenCsrInput): void => {
     input.maxIterations !== undefined &&
     (!Number.isInteger(input.maxIterations) || input.maxIterations < 1)
   ) {
-    throw new RangeError(
-      `maxIterations must be a positive integer, got ${input.maxIterations}`,
-    );
+    throw new RangeError(`maxIterations must be a positive integer, got ${input.maxIterations}`);
   }
   if (
     input.qualityFunction !== undefined &&

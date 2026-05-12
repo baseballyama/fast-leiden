@@ -20,7 +20,6 @@ const VENDOR = join(ROOT, "vendor");
 const BUILD_DIR = join(VENDOR, "build-deps");
 const INSTALL_DIR = join(BUILD_DIR, "install");
 const IS_WIN = platform() === "win32";
-const LIB_EXT = IS_WIN ? "lib" : "a";
 // On Unix the library files come out as `lib<target>.a`; on Windows MSVC
 // produces `<target>.lib` (no `lib` prefix). The libleidenalg CMake target
 // is named `libleidenalg` so the file is `liblibleidenalg.a` on Unix and
@@ -57,9 +56,7 @@ const findInstalledLib = (basename) => {
 const ensureSubmodules = () => {
   for (const name of ["igraph", "libleidenalg"]) {
     if (!existsSync(join(VENDOR, name, "CMakeLists.txt"))) {
-      die(
-        `vendor/${name} is missing. Run:\n  git submodule update --init --recursive`,
-      );
+      die(`vendor/${name} is missing. Run:\n  git submodule update --init --recursive`);
     }
   }
 };
@@ -83,16 +80,7 @@ const cmakeConfigure = (sourceDir, buildDir, extra) => {
 };
 
 const cmakeBuildInstall = (buildDir) => {
-  run("cmake", [
-    "--build",
-    buildDir,
-    "--target",
-    "install",
-    "--config",
-    "Release",
-    "-j",
-    jobs(),
-  ]);
+  run("cmake", ["--build", buildDir, "--target", "install", "--config", "Release", "-j", jobs()]);
 };
 
 const buildIgraph = () => {
@@ -124,11 +112,9 @@ const buildLibleidenalg = () => {
     return;
   }
   log("==> Configuring libleidenalg");
-  cmakeConfigure(
-    join(VENDOR, "libleidenalg"),
-    join(BUILD_DIR, "libleidenalg"),
-    [`-DCMAKE_PREFIX_PATH=${INSTALL_DIR}`],
-  );
+  cmakeConfigure(join(VENDOR, "libleidenalg"), join(BUILD_DIR, "libleidenalg"), [
+    `-DCMAKE_PREFIX_PATH=${INSTALL_DIR}`,
+  ]);
   log("==> Building libleidenalg");
   cmakeBuildInstall(join(BUILD_DIR, "libleidenalg"));
 };

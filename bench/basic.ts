@@ -4,6 +4,11 @@
 // reports fast-leiden timings.
 //
 // Run with: `pnpm bench`
+//
+// We await sequentially inside the trial loop on purpose — measuring each
+// run's wall time is the whole point — so the no-await-in-loop lint is
+// suppressed for this file.
+/* oxlint-disable no-await-in-loop */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -11,7 +16,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { leiden, leidenAsync } from "../src/index.js";
+// Imported from the built dist so node --experimental-strip-types doesn't
+// need to rewrite TypeScript import paths. `pnpm bench` runs the build
+// first, so this is always up-to-date.
+import { leiden, leidenAsync } from "../dist/index.js";
 
 interface SbmGraph {
   nodeCount: number;
@@ -57,8 +65,7 @@ const generateSbm = (
   };
 };
 
-const formatMs = (ms: number) =>
-  ms < 1 ? `${(ms * 1000).toFixed(0)} µs` : `${ms.toFixed(1)} ms`;
+const formatMs = (ms: number) => (ms < 1 ? `${(ms * 1000).toFixed(0)} µs` : `${ms.toFixed(1)} ms`);
 
 const timeIt = async <T>(fn: () => Promise<T> | T): Promise<[T, number]> => {
   const start = process.hrtime.bigint();
@@ -67,11 +74,7 @@ const timeIt = async <T>(fn: () => Promise<T> | T): Promise<[T, number]> => {
   return [result, ns / 1e6];
 };
 
-const recoveryRate = (
-  membership: Uint32Array,
-  blockCount: number,
-  perBlock: number,
-): number => {
+const recoveryRate = (membership: Uint32Array, blockCount: number, perBlock: number): number => {
   // Count, for each detected community, the most common true block.
   const tally = new Map<number, Map<number, number>>();
   for (let i = 0; i < membership.length; i++) {
@@ -230,22 +233,16 @@ const main = async (): Promise<void> => {
     const asyncAvg = asyncTotal / trials;
 
     const detectedCommunities =
-      lastResult === undefined
-        ? 0
-        : new Set(Array.from(lastResult.membership)).size;
+      lastResult === undefined ? 0 : new Set(Array.from(lastResult.membership)).size;
     const recovery =
       lastResult === undefined
         ? 0
         : recoveryRate(lastResult.membership, g.blockCount, cfg.perBlock);
 
     // eslint-disable-next-line no-console
-    console.log(
-      `  fast-leiden sync:    avg ${formatMs(syncAvg)} over ${trials} runs`,
-    );
+    console.log(`  fast-leiden sync:    avg ${formatMs(syncAvg)} over ${trials} runs`);
     // eslint-disable-next-line no-console
-    console.log(
-      `  fast-leiden async:   avg ${formatMs(asyncAvg)} over ${trials} runs`,
-    );
+    console.log(`  fast-leiden async:   avg ${formatMs(asyncAvg)} over ${trials} runs`);
     // eslint-disable-next-line no-console
     console.log(
       `  communities found:   ${detectedCommunities} (truth: ${g.blockCount})  ` +

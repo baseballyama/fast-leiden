@@ -9,10 +9,10 @@ const TWO_TRIANGLES = {
 
 describe("leidenAsync()", () => {
   it("returns the same result as leiden() for the same input + seed", async () => {
-    const sync = leiden({ ...TWO_TRIANGLES, seed: 99 });
-    const async_ = await leidenAsync({ ...TWO_TRIANGLES, seed: 99 });
-    expect(Array.from(async_.membership)).toEqual(Array.from(sync.membership));
-    expect(async_.quality).toBeCloseTo(sync.quality, 12);
+    const syncResult = leiden({ ...TWO_TRIANGLES, seed: 99 });
+    const asyncResult = await leidenAsync({ ...TWO_TRIANGLES, seed: 99 });
+    expect(Array.from(asyncResult.membership)).toEqual(Array.from(syncResult.membership));
+    expect(asyncResult.quality).toBeCloseTo(syncResult.quality, 12);
   });
 
   it("rejects with a validation error for bad input", async () => {

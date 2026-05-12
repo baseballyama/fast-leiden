@@ -33,3 +33,8 @@ bench/.venv/
 
 # CMake-built deps
 vendor/build-deps/
+
+# Nix / direnv
+.direnv/
+result
+result-*

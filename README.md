@@ -100,9 +100,24 @@ The first build takes several minutes because `vendor/igraph` and
 `vendor/libleidenalg` are compiled from source via CMake. Subsequent builds
 reuse the install tree under `vendor/build-deps/install/`.
 
-## Build requirements
+### Reproducible dev environment (Nix)
 
-- Node.js >= 20
+If you have [Nix](https://nixos.org/download.html) with flakes enabled, all
+build dependencies (Node 24, CMake, Python + `igraph` + `leidenalg`) are
+pinned in `flake.nix`:
+
+```bash
+nix develop                     # one-shot shell
+# or, with direnv:
+direnv allow                    # auto-loads on cd
+```
+
+Inside the shell, `pnpm install && pnpm build && pnpm test` works without any
+further setup, and `pnpm bench` finds Python's leidenalg out of the box.
+
+## Build requirements (without Nix)
+
+- Node.js >= 22 (24 LTS recommended)
 - A C++17 toolchain (Xcode CLT on macOS, `build-essential` on Linux, MSVC on
   Windows)
 - CMake >= 3.23 (the requirement comes from `libleidenalg`)

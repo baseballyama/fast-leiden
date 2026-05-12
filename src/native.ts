@@ -40,20 +40,10 @@ interface NativeBinding {
   version(): string;
   leidenFromEdgeList(input: NativeLeidenInput): NativeLeidenResult;
   leidenFromCsr(input: NativeLeidenCsrInput): NativeLeidenResult;
-  leidenFromEdgeListAsync(
-    input: NativeLeidenInput,
-  ): Promise<NativeLeidenResult>;
+  leidenFromEdgeListAsync(input: NativeLeidenInput): Promise<NativeLeidenResult>;
   leidenFromCsrAsync(input: NativeLeidenCsrInput): Promise<NativeLeidenResult>;
 }
 
-const bindingPath = join(
-  __dirname,
-  "..",
-  "build",
-  "Release",
-  "fast_leiden.node",
-);
+const bindingPath = join(__dirname, "..", "build", "Release", "fast_leiden.node");
 
-export const native: NativeBinding = requireFromHere(
-  bindingPath,
-) as NativeBinding;
+export const native: NativeBinding = requireFromHere(bindingPath) as NativeBinding;
