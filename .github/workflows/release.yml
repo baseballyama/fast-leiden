@@ -1,30 +1,24 @@
 name: Release
 
-# Changesets-driven publish to npm.
+# Changesets-driven release for a native Node addon.
 #
-# Flow:
-#   1. PRs land on `main` with a `.changeset/*.md` file describing the bump.
-#   2. This workflow opens (or updates) a "Version Packages" PR that bumps
-#      package.json + CHANGELOG.md and removes consumed changesets.
-#   3. Merging that PR re-runs this workflow, which now finds no pending
-#      changesets and instead publishes to npm with provenance and creates a
-#      GitHub Release for each version bump.
+# Two distinct paths on a push to `main`:
 #
-# Authentication:
-#   Publishing uses npm Trusted Publishers (OIDC). The package on npm must be
-#   configured to trust this repo + workflow at
-#   https://www.npmjs.com/package/<package-name>/access. No NPM_TOKEN secret is
-#   needed; OIDC is brokered via the `id-token: write` permission below. If you
-#   prefer a classic NPM_TOKEN, set it as a repo secret and add
-#   `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` under env on the publish step.
+#   1. There ARE pending changesets in `.changeset/*.md` (and they aren't
+#      just the README): this is a feature merge. We open / update the
+#      "Version Packages" PR via changesets/action; no publish.
 #
-# Required repo settings:
-#   - Settings → Actions → General → Workflow permissions:
-#     "Read and write permissions" + "Allow GitHub Actions to create and approve
-#     pull requests" (so changesets/action can open the release PR).
+#   2. There are NO pending changesets: this is the merge of the Version
+#      Packages PR. We build platform prebuilds in parallel, download every
+#      artifact into `prebuilds/<platform>-<arch>/`, refuse to publish if
+#      any platform from the supported matrix is missing, and only then
+#      call `changeset publish` to push the tarball (with all prebuilds)
+#      to npm.
 #
-# Adapt this file for non-npm registries (Cargo, PyPI, ...) — the changesets
-# action ships only the npm path; other ecosystems need their own publish step.
+# Authentication uses npm Trusted Publishers (OIDC) — no NPM_TOKEN is
+# required; the `id-token: write` permission below brokers it. Configure
+# the package's npm page to trust this repo + workflow before the first
+# publish.
 
 on:
   push:
@@ -32,17 +26,122 @@ on:
       - main
 
 permissions:
-  contents: write # create/merge release PR, push tags, GitHub Releases
-  pull-requests: write # open the "Version Packages" PR
-  id-token: write # OIDC for npm provenance
+  contents: write
+  pull-requests: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Matrix kept in one place so prebuild + publish can't drift apart. Mirror
+# this in README "Install model" if you add or remove a target.
+env:
+  PREBUILD_TARGETS: "linux-x64 darwin-arm64 darwin-x64 win32-x64"
+
 jobs:
-  release:
-    name: Release
+  check:
+    name: Check release readiness
+    runs-on: ubuntu-latest
+    outputs:
+      hasChangesets: ${{ steps.check.outputs.hasChangesets }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        shell: bash
+        run: |
+          # A non-README .md under .changeset/ means a release is queued
+          # behind a Version Packages PR. No file means the PR has been
+          # merged and we're ready to publish.
+          pending="$(find .changeset -maxdepth 1 -type f -name '*.md' ! -name 'README.md' | head -n 1 || true)"
+          if [ -n "${pending}" ]; then
+            echo "hasChangesets=true" >> "$GITHUB_OUTPUT"
+            echo "Pending changesets present: ${pending}"
+          else
+            echo "hasChangesets=false" >> "$GITHUB_OUTPUT"
+            echo "No pending changesets — release path"
+          fi
+
+  release-pr:
+    name: Open / update Release PR
+    needs: check
+    if: needs.check.outputs.hasChangesets == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - uses: changesets/action@v1
+        with:
+          version: pnpm changeset version
+          # Empty publish: this run only opens / updates the Version
+          # Packages PR. The actual publish happens on the next push to
+          # main (the merge of that PR), via the prebuild + publish jobs
+          # below.
+          publish: ""
+          title: "chore(release): version packages"
+          commit: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  prebuild:
+    name: Prebuild ${{ matrix.target }}
+    needs: check
+    if: needs.check.outputs.hasChangesets == 'false'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Any platform missing aborts the publish — we never want to ship a
+      # tarball with a hole in the prebuild matrix that silently falls
+      # through to source build on consumer machines.
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: windows-latest
+            target: win32-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build prebuild
+        run: pnpm run prebuild
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: prebuilds/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: [check, prebuild]
+    if: needs.check.outputs.hasChangesets == 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,45 +150,67 @@ jobs:
           submodules: recursive
 
       - uses: pnpm/action-setup@v4
-
-      # Use Node 24 here. `changeset publish` shells out to `npm publish`, and
-      # OIDC Trusted Publishers require npm CLI >= 11.5.1, which ships with
-      # Node 24. CI keeps testing the full Node 20/22/24 matrix; only the
-      # publish job needs the newer npm.
-      #
-      # Note: do NOT set `registry-url` here unless you want token auth — it
-      # would have setup-node write `_authToken=${NODE_AUTH_TOKEN}` into .npmrc
-      # and force token auth, blocking the OIDC code path.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
 
-      - name: Cache vendor build-deps
-        uses: actions/cache@v4
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build TypeScript output
+        run: pnpm build:ts
+
+      - name: Download every prebuild artifact
+        uses: actions/download-artifact@v4
         with:
-          path: vendor/build-deps
-          key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
+          path: prebuilds-staging
+          pattern: prebuild-*
 
-      - run: pnpm install --frozen-lockfile
+      - name: Stage prebuilds at prebuilds/<target>/
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prebuilds
+          for d in prebuilds-staging/prebuild-*/; do
+            target="${d#prebuilds-staging/prebuild-}"
+            target="${target%/}"
+            mkdir -p "prebuilds/${target}"
+            mv "${d}"* "prebuilds/${target}/"
+          done
+          ls -la prebuilds/
 
-      # Build first — the native addon must exist before tests can load it.
-      - run: pnpm build
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
+      - name: Verify every platform's prebuild is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for target in $PREBUILD_TARGETS; do
+            if ! ls "prebuilds/${target}"/*.node >/dev/null 2>&1; then
+              echo "MISSING prebuild for ${target}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Refusing to publish: prebuild matrix is incomplete."
+            exit 1
+          fi
+          echo "All targets present: ${PREBUILD_TARGETS}"
 
-      - name: Create Release PR or publish to npm
-        id: changesets
+      - name: Inspect tarball contents (sanity check)
+        run: |
+          pnpm pack --pack-destination /tmp
+          ls -la /tmp/fast-leiden-*.tgz
+          tar -tzf /tmp/fast-leiden-*.tgz | grep '^package/prebuilds/'
+
+      - name: Publish via changesets
         uses: changesets/action@v1
         with:
-          # `pnpm changeset version` consumes pending changesets and writes the
-          # version bump + CHANGELOG. `pnpm release` is the project-defined
-          # publish script (typically `changeset publish`).
-          version: pnpm changeset version
-          publish: pnpm release
-          title: "chore(release): version packages"
-          commit: "chore(release): version packages"
+          # Skip `pnpm release` (which would re-run `pnpm build` and
+          # overwrite the staged prebuilds with a fresh source build for
+          # only the ubuntu runner's platform). We've already built the
+          # TypeScript output and staged every platform's prebuild above,
+          # so we just want changeset to drive `npm publish`.
+          publish: pnpm exec changeset publish
           createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

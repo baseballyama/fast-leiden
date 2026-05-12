@@ -53,6 +53,7 @@
     "build:native": "node scripts/write-version-header.mjs && node-gyp rebuild",
     "build:ts": "tsc -p tsconfig.json",
     "prebuild": "node scripts/prebuild.mjs",
+    "bump-vendor": "node scripts/bump-vendor.mjs",
     "clean": "node scripts/clean.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "oxlint",

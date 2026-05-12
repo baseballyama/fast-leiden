@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -156,7 +157,26 @@ LeidenResultC RunLeidenOnGraph(Graph& graph, const LeidenJob& job) {
   };
 }
 
+// Global mutex serializing every call into igraph + libleidenalg.
+//
+// Why a process-global lock: igraph's error-handling layer is explicitly
+// *not* thread-safe — see vendor/igraph/include/igraph_error.h (the
+// IGRAPH_ERROR family relies on thread-shared error state). libleidenalg
+// builds on top of those calls. If we let two libuv worker threads run
+// optimise_partition() simultaneously, we risk torn error state, partial
+// cleanup on one thread observed by the other, and undefined behaviour.
+//
+// Holding this lock for the full RunLeidenJob serializes sync calls, async
+// workers, and any mix of the two. Sync callers may briefly block waiting
+// for an in-flight async worker — that's the price of correctness given the
+// upstream constraint. If contention is ever a real problem, the right
+// answer is process isolation (worker_threads / child_process), not a
+// finer-grained lock.
+std::mutex g_leiden_mutex;
+
 LeidenResultC RunLeidenJob(const LeidenJob& job) {
+  std::lock_guard<std::mutex> lock(g_leiden_mutex);
+
   const size_t edge_count = job.sources.size();
   igraph_t g;
   BuildIgraphFromEdges(&g, job.node_count, job.sources.data(), job.targets.data(),

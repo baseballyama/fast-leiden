@@ -174,13 +174,29 @@ try {
 await leidenAsync({ nodeCount, sources, targets, signal: AbortSignal.timeout(5_000) });
 ```
 
-When the signal aborts, the returned Promise rejects **immediately** with
-`signal.reason` (an `AbortError` by default). The native worker thread may
-continue running until it completes — we don't yet propagate the cancel into
-`libleidenalg` — but the JS-side handle is released and the worker's result
-is silently discarded. If you need a hard CPU-and-memory deadline (not just
-a "your code unblocks" deadline), run the caller in a `worker_threads`
-worker or a child process that you can terminate.
+> ⚠️ **`signal` is a soft cancel, not a hard cancel.** When the signal
+> aborts, the returned Promise rejects **immediately** with `signal.reason`,
+> but **the native worker thread keeps running until it finishes**. CPU and
+> memory are not released early; only the JS-side handle is. The cost is
+> bounded by the size of the graph you queued, but on a multi-million-edge
+> graph that can be tens of seconds of wasted compute after abort.
+>
+> If you need a real CPU-and-memory deadline (not just a "your code
+> unblocks" deadline), run the call inside a `worker_threads` worker or a
+> child process that you can `terminate()` / `kill()`. That is the only
+> mechanism today that releases the native thread immediately. Native
+> cooperative cancellation (propagating into `libleidenalg` via igraph's
+> interruption handler) is on the roadmap; track it in the open issues.
+
+Async calls into the native side are **serialized by a process-global
+mutex**. `igraph`'s error-handling layer is not thread-safe (see
+[`igraph_error.h`](./vendor/igraph/include/igraph_error.h)), so we
+sequence every Leiden call — sync or async, from any thread — behind the
+same lock. Many parallel `leidenAsync` callers therefore run one-at-a-
+time on the worker pool; the benefit you get from `*Async` is still
+"don't block the event loop", not "use 4 CPU cores". For true parallel
+throughput use multiple `worker_threads` (each with its own loaded addon
+copy) or multiple processes.
 
 ## Memory footprint
 
@@ -252,6 +268,14 @@ The tarball still ships the vendored sources so the source-build fallback
 works on any platform that has the toolchain. If you're packaging into a
 container where every byte matters, you can strip `vendor/` after install
 once the addon is built.
+
+**Release-side guarantee.** The release workflow
+([`.github/workflows/release.yml`](./.github/workflows/release.yml)) runs
+the prebuild matrix as a hard dependency of the publish job and verifies
+that every platform listed above produced a `*.node` artifact before it
+calls `changeset publish`. A missing platform aborts the publish — we
+never want to ship a tarball with a hole in the matrix that silently
+falls through to source build on consumer machines.
 
 For local development:
 
@@ -406,12 +430,22 @@ fast-leiden/
   a worker thread, but the JS→C++ copy of `sources`, `targets`, and `weights`
   happens on the JS thread before the worker is queued. For multi-million
   edge graphs this copy is non-trivial.
-- **Cancellation is JS-side only.** `leidenAsync` / `leidenFromCsrAsync`
-  accept an `AbortSignal`; on abort the returned Promise rejects with
-  `signal.reason` immediately, but the native worker keeps running to
-  completion (we don't yet propagate the cancel into libleidenalg). Wasted
-  CPU is bounded by the size of the graph, but if you need a hard deadline
-  for very large graphs, run the caller in a child process you can terminate.
+- **Cancellation is JS-side only (soft cancel).** `leidenAsync` /
+  `leidenFromCsrAsync` accept an `AbortSignal`; on abort the returned
+  Promise rejects with `signal.reason` immediately, but **the native
+  worker thread keeps running until it completes**. CPU and memory are
+  not released early. Wasted compute is bounded by the size of the graph
+  you queued; for very large graphs that can be tens of seconds. If you
+  need a real deadline, run the caller in a `worker_threads` worker or
+  child process you can terminate. Native cooperative cancellation
+  (propagating into libleidenalg via igraph's interruption handler) is
+  on the roadmap.
+- **No true parallelism inside one process.** Every call into the native
+  side is serialized by a process-global mutex because `igraph`'s
+  error-handling layer is not thread-safe. `leidenAsync` still gets you
+  off the event loop, but `Promise.all([leidenAsync(...), leidenAsync(...)])`
+  runs the two calls one after the other on the worker pool. For real
+  parallel throughput, spawn multiple `worker_threads` or processes.
 - **Community ids are not stable** across runs, seeds, or `libleidenalg`
   versions — only the partition (equivalence classes) is meaningful.
 - **No streaming / chunked input.** The whole graph must fit in memory.
@@ -445,19 +479,32 @@ fast-leiden/
 
 ## Submodule update policy
 
-`vendor/igraph` and `vendor/libleidenalg` are pinned via git submodule. We
-**follow upstream on a best-effort basis**:
+`vendor/igraph` and `vendor/libleidenalg` are pinned via git submodule. The
+currently pinned versions are:
 
-- We bump submodules when an upstream release fixes a bug we hit, ships a
-  security fix, or adds a feature we need. There is **no fixed cadence**.
-- If upstream lands a fix you care about, file an issue with the commit /
-  release link and we'll prioritise the bump.
+<!-- vendor-versions:start -->
+
+| Upstream                                                 | Pinned version |
+| -------------------------------------------------------- | -------------- |
+| [`igraph`](https://github.com/igraph/igraph)             | `1.0.1`        |
+| [`libleidenalg`](https://github.com/vtraag/libleidenalg) | `0.12.0`       |
+
+_Auto-updated by_ `.github/workflows/vendor-update.yml` _on the daily schedule._
+
+<!-- vendor-versions:end -->
+
+- A daily GitHub Actions cron (see
+  [`.github/workflows/vendor-update.yml`](./.github/workflows/vendor-update.yml))
+  checks both upstreams for a newer release, bumps the submodule + the
+  `*_VERSION_FALLBACK` constants in `scripts/build-deps.mjs`, refreshes the
+  table above, and opens an automated PR. CI must go green (Linux/macOS/
+  Windows × Node 22 / 24 / 26 + ASan/UBSan) before we merge.
+- If you depend on an upstream fix that hasn't landed yet, file an issue
+  with the commit / release link and we'll prioritise.
 - Submodule bumps that change deterministic partition output, ABI, or
-  behaviour are called out in [`CHANGELOG.md`](./CHANGELOG.md). Pre-1.0,
-  these can land in any **minor** release; once we cut 1.0 they become
-  major bumps.
-- Each bump goes through the full CI matrix (Linux/macOS/Windows × Node
-  22 / 24 / 26 plus the ASan/UBSan job) before merge.
+  observable behaviour are called out in [`CHANGELOG.md`](./CHANGELOG.md).
+  Pre-1.0, these can land in any **minor** release; once we cut 1.0 they
+  become major bumps.
 
 ## Versioning and breaking-change policy
 

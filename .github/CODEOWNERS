@@ -1,0 +1,5 @@
+# GitHub CODEOWNERS — everything routes to the maintainer until subsystem
+# owners exist. Listing the owner here means @baseballyama is auto-requested
+# for review on every PR, even those filed via the GitHub UI.
+
+* @baseballyama

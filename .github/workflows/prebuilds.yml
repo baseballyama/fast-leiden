@@ -1,19 +1,17 @@
-name: Prebuilds
+name: Prebuilds (manual)
 
 # Build a platform-specific prebuilt binary for each supported runner and
-# upload it as an artifact. The actual publish-to-npm step is deliberately
-# decoupled — once the matrix completes, a separate release job (run on a
-# tag push with NPM_TOKEN configured) downloads every artifact into
-# `prebuilds/` and runs `npm publish` so the tarball ships with binaries
-# for every platform in the matrix.
+# upload it as an artifact, then run a tarball-install smoke test on each
+# platform.
 #
-# Trigger:
-#   - manual via workflow_dispatch (for testing the pipeline)
-#   - tag push `v*` (the release path)
+# This workflow is for **manual verification only** — the real publish path
+# lives in `release.yml`, which runs the same prebuild matrix on every push
+# to `main` once the Version Packages PR is merged. Use this workflow when
+# you want to exercise the prebuild pipeline without going through a full
+# release (e.g., after touching `scripts/install.mjs`, `scripts/prebuild.mjs`,
+# or `binding.gyp`).
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
