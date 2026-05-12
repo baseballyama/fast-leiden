@@ -16,7 +16,7 @@ and a submodule update policy.
   platform on every tag push and uploads the binaries as artifacts; a
   follow-up `smoke` job per-platform then `pnpm pack`s the tarball with
   the artifact dropped in, installs it into a fresh project, asserts
-  `build/Release/` was *not* produced (proving the prebuild was used),
+  `build/Release/` was _not_ produced (proving the prebuild was used),
   and runs the public API.
 - **`AbortSignal` cancellation on async calls.** `LeidenOptions` gains a
   `signal?: AbortSignal` field, respected by `leidenAsync` and
