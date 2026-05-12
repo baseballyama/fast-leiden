@@ -471,3 +471,18 @@ jobs:
           # --clobber keeps reruns idempotent if we ever have to re-attach
           # after a transient failure.
           gh release upload "${tag}" sbom.cdx.json --clobber
+
+      - name: Trigger post-publish smoke
+        # The `release: published` trigger on `post-publish-smoke.yml`
+        # does NOT fire for releases that GITHUB_TOKEN (i.e. the
+        # changesets/action step above) creates — that's a GitHub safety
+        # rail to prevent recursive workflow loops. We explicitly kick the
+        # workflow_dispatch here so a fresh release still gets smoked.
+        if: needs.check.outputs.hasChangesets == 'false' && steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          echo "Triggering post-publish smoke for fast-leiden@${version}"
+          gh workflow run post-publish-smoke.yml -f version="${version}"
