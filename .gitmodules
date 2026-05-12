@@ -1,0 +1,6 @@
+[submodule "vendor/igraph"]
+	path = vendor/igraph
+	url = https://github.com/igraph/igraph.git
+[submodule "vendor/leidenalg"]
+	path = vendor/leidenalg
+	url = https://github.com/vtraag/leidenalg.git

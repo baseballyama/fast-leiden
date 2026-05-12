@@ -1,0 +1,76 @@
+name: CI
+
+# Quality gate for fast-leiden. The project is a native Node.js addon that
+# wraps igraph + leidenalg, so CI needs to (a) check out the upstream
+# submodules and (b) be able to build the C/C++ code on every supported
+# Node.js version.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheap, single-version gate. Catches typing / lint / format violations
+  # before the test matrix spins up.
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Build (TypeScript + native addon)
+        run: pnpm build
+
+  # Multi-version test matrix. Each runner builds the native addon against
+  # its own Node.js ABI before running the test suite.
+  test:
+    name: Test (Node ${{ matrix.node-version }} / ${{ matrix.os }})
+    needs: static
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: ["20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
