@@ -138,22 +138,38 @@ const ensureSubmodules = () => {
 };
 
 // Write the VERSION file each upstream CMake looks for first. When git is
-// available inside the submodule, prefer `git describe --tags` so the version
-// matches what's actually checked out; otherwise fall back to the constants
-// at the top of this file.
+// available inside the submodule and the checked-out commit is reachable
+// from a tag, prefer `git describe --tags` so the version matches what's
+// actually checked out; otherwise fall back to the constants at the top of
+// this file.
+//
+// We MUST NOT accept a bare SHA here: CMake's `project(VERSION ...)`
+// rejects anything that isn't `MAJOR[.MINOR[.PATCH[.TWEAK]]]`, all digits.
+// `git describe --tags --always` falls back to a short SHA on shallow
+// clones (CI submodule checkouts default to `fetch-depth: 1`, so no tags
+// are fetched) and that SHA would crash the configure step with
+// `VERSION "d03122b" format invalid`. Validate the candidate against the
+// CMake-accepted shape before using it.
+const CMAKE_VERSION_RE = /^\d+(?:\.\d+){0,3}$/;
+
 const writeVersionFile = (submodule, filename, fallback) => {
   const dir = join(VENDOR, submodule);
   const dest = join(dir, filename);
   if (existsSync(dest)) return;
 
   let version = fallback;
-  const git = spawnSync("git", ["describe", "--tags", "--always"], {
+  // No `--always`: if no tag is reachable we want git to fail, not return
+  // a SHA. Some upstreams tag as `v1.2.3`, some as `1.2.3` — strip the
+  // leading `v` so CMake sees a clean digit-only string. Also strip the
+  // `-N-gSHA` suffix `git describe` adds when HEAD is past the last tag.
+  const git = spawnSync("git", ["describe", "--tags"], {
     cwd: dir,
     encoding: "utf8",
   });
   if (git.status === 0) {
-    const candidate = git.stdout.trim();
-    if (candidate) version = candidate;
+    const raw = git.stdout.trim();
+    const candidate = raw.replace(/^v/, "").replace(/-\d+-g[0-9a-f]+$/i, "");
+    if (CMAKE_VERSION_RE.test(candidate)) version = candidate;
   }
   writeFileSync(dest, `${version}\n`);
   log(`==> Wrote ${submodule}/${filename}: ${version}`);

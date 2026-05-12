@@ -95,9 +95,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   prebuild:
+    # The job is NOT gated by `if:` at the job level — that would skip
+    # matrix expansion and GitHub's UI would show a literal
+    # `Prebuild ${{ matrix.target }}` row, which is confusing. Instead we
+    # always run the matrix and gate the actual work at the step level.
+    # On Release-PR runs (hasChangesets='true') every step is skipped and
+    # the runner spends ~10s spinning up and quitting per target — cheap
+    # compared to the alternative of an opaque UI.
     name: Prebuild ${{ matrix.target }}
     needs: check
-    if: needs.check.outputs.hasChangesets == 'false'
     runs-on: ${{ matrix.os }}
     strategy:
       # Any platform missing aborts the publish — we never want to ship a
@@ -115,22 +121,36 @@ jobs:
           - os: windows-latest
             target: win32-x64
     steps:
+      - name: Note Release-PR path (skipping prebuild)
+        if: needs.check.outputs.hasChangesets == 'true'
+        shell: bash
+        run: |
+          echo "Pending changesets exist; this run only opens the Release PR."
+          echo "No prebuild for ${{ matrix.target }} on this push."
+
       - uses: actions/checkout@v4
+        if: needs.check.outputs.hasChangesets == 'false'
         with:
           submodules: recursive
 
       - uses: pnpm/action-setup@v4
+        if: needs.check.outputs.hasChangesets == 'false'
+
       - uses: actions/setup-node@v4
+        if: needs.check.outputs.hasChangesets == 'false'
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
+        if: needs.check.outputs.hasChangesets == 'false'
 
       - name: Build prebuild
+        if: needs.check.outputs.hasChangesets == 'false'
         run: pnpm run prebuild
 
       - name: Upload prebuild artifact
+        if: needs.check.outputs.hasChangesets == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: prebuild-${{ matrix.target }}
@@ -141,32 +161,46 @@ jobs:
   publish:
     name: Publish to npm
     needs: [check, prebuild]
-    if: needs.check.outputs.hasChangesets == 'false'
+    # Same pattern as `prebuild`: never gate at the job level, gate at the
+    # step level. Skipped Publish-to-npm rows now stay readable in the UI.
     runs-on: ubuntu-latest
     steps:
+      - name: Note Release-PR path (skipping publish)
+        if: needs.check.outputs.hasChangesets == 'true'
+        shell: bash
+        run: echo "Pending changesets exist; nothing to publish on this push."
+
       - uses: actions/checkout@v4
+        if: needs.check.outputs.hasChangesets == 'false'
         with:
           fetch-depth: 0
           submodules: recursive
 
       - uses: pnpm/action-setup@v4
+        if: needs.check.outputs.hasChangesets == 'false'
+
       - uses: actions/setup-node@v4
+        if: needs.check.outputs.hasChangesets == 'false'
         with:
           node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
+        if: needs.check.outputs.hasChangesets == 'false'
 
       - name: Build TypeScript output
+        if: needs.check.outputs.hasChangesets == 'false'
         run: pnpm build:ts
 
       - name: Download every prebuild artifact
+        if: needs.check.outputs.hasChangesets == 'false'
         uses: actions/download-artifact@v4
         with:
           path: prebuilds-staging
           pattern: prebuild-*
 
       - name: Stage prebuilds at prebuilds/<target>/
+        if: needs.check.outputs.hasChangesets == 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -180,6 +214,7 @@ jobs:
           ls -la prebuilds/
 
       - name: Verify every platform's prebuild is present
+        if: needs.check.outputs.hasChangesets == 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -197,12 +232,14 @@ jobs:
           echo "All targets present: ${PREBUILD_TARGETS}"
 
       - name: Inspect tarball contents (sanity check)
+        if: needs.check.outputs.hasChangesets == 'false'
         run: |
           pnpm pack --pack-destination /tmp
           ls -la /tmp/fast-leiden-*.tgz
           tar -tzf /tmp/fast-leiden-*.tgz | grep '^package/prebuilds/'
 
       - name: Publish via changesets
+        if: needs.check.outputs.hasChangesets == 'false'
         uses: changesets/action@v1
         with:
           # Skip `pnpm release` (which would re-run `pnpm build` and
