@@ -552,6 +552,16 @@ libc.
 Anything outside the matrix above is **Tier 2 (source build) or
 unsupported** — see [Support tiers](#support-tiers) above.
 
+**Auxiliary workflows** that run alongside the two main matrices:
+
+| Workflow                                                               | Trigger                         | What it does                                                                                                  |
+| ---------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [`codeql.yml`](./.github/workflows/codeql.yml)                         | per PR + weekly (Mon 06:00 UTC) | CodeQL `security-extended` against C/C++ binding + TypeScript surface                                         |
+| [`fuzz.yml`](./.github/workflows/fuzz.yml)                             | nightly (03:00 UTC)             | fast-check property fuzz (`test/**/*.fuzz.ts`) at 5000 runs under ASan + UBSan                                |
+| [`soak.yml`](./.github/workflows/soak.yml)                             | weekly                          | Large-graph soak (~50K nodes / 1–2M edges) on Linux                                                           |
+| [`post-publish-smoke.yml`](./.github/workflows/post-publish-smoke.yml) | on release published + manual   | Installs the just-published `fast-leiden@<v>` from the npm registry on every Tier 1 platform and runs a smoke |
+| [`vendor-update.yml`](./.github/workflows/vendor-update.yml)           | daily                           | Bumps the `vendor/igraph` + `vendor/libleidenalg` submodules and opens a PR if upstream advanced              |
+
 ### Node-API compatibility policy
 
 The native addon is built against Node-API (N-API), which is the stable ABI

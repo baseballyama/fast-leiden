@@ -340,10 +340,9 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         if: needs.check.outputs.hasChangesets == 'false'
         # Produces a CycloneDX 1.5 JSON for the production dependency tree.
-        # The SBOM is uploaded as a workflow artifact below; we also attach
-        # it to the GitHub Release via changesets/action's
-        # `createGithubReleases: true` (which keys off the version tag and
-        # picks up release assets in the runner workspace at publish time).
+        # We upload it both as a workflow artifact (365-day retention) and as
+        # a GitHub Release asset (permanent, public — see the "Attach SBOM to
+        # GitHub Release" step below).
         run: |
           set -euo pipefail
           npx --yes @cyclonedx/cyclonedx-npm@2 \
@@ -365,6 +364,7 @@ jobs:
           retention-days: 365
 
       - name: Publish via changesets
+        id: publish
         if: needs.check.outputs.hasChangesets == 'false'
         uses: changesets/action@v1
         with:
@@ -378,3 +378,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
+
+      - name: Attach SBOM to GitHub Release
+        # Only run if `changesets/action` actually published a new version.
+        # The action exposes `published` ('true'/'false' string) and
+        # `publishedPackages` for that case. For our single-package repo the
+        # release tag is `v<version>` (changesets default).
+        if: needs.check.outputs.hasChangesets == 'false' && steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          echo "Attaching sbom.cdx.json to release ${tag}"
+          # --clobber keeps reruns idempotent if we ever have to re-attach
+          # after a transient failure.
+          gh release upload "${tag}" sbom.cdx.json --clobber

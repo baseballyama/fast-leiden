@@ -1,0 +1,79 @@
+name: CodeQL
+
+# Static analysis for both halves of the addon:
+#   * `c-cpp`         — the native binding in `native/` plus the vendored
+#                       igraph + libleidenalg sources that get linked in.
+#   * `javascript-typescript` — the TypeScript public surface in `src/`.
+#
+# Runs on every push / PR to `main`, plus a weekly schedule so a CodeQL query
+# update (Anthropic-side, not ours) can resurface findings on an unchanged
+# tree.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays at 06:00 UTC — well clear of the nightly fuzz workflow
+    # (`fuzz.yml`, 03:00 UTC) so the two never share a runner pool.
+    - cron: "0 6 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # `c-cpp` requires CodeQL to observe the actual build command (it
+        # traces the compiler invocations), so we run a real `pnpm build`
+        # there. `javascript-typescript` autobuilds.
+        language: ["c-cpp", "javascript-typescript"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-extended` adds the more thorough queries; the bare
+          # `security` pack is the default and we explicitly want the
+          # extra ones for a GPL native addon touching raw pointers.
+          queries: security-extended
+
+      - uses: pnpm/action-setup@v4
+        if: matrix.language == 'c-cpp'
+      - uses: actions/setup-node@v4
+        if: matrix.language == 'c-cpp'
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Build native (so CodeQL can trace the compiler)
+        if: matrix.language == 'c-cpp'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Autobuild (JS/TS)
+        if: matrix.language == 'javascript-typescript'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

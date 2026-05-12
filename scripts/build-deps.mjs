@@ -71,7 +71,12 @@ const run = (cmd, args, opts = {}) => {
 // On every run we compare the current axes against the recorded ones and wipe
 // the install tree on mismatch so the rebuild is forced.
 const currentBuildAxes = () => ({
-  schemaVersion: 1,
+  // schemaVersion bumps invalidate every previously cached install tree on
+  // the next run. Bump this whenever an axis the install tree depends on
+  // changes (CRT model, ABI flags, compile defines that change linkage,
+  // etc.) and the change isn't already captured by one of the existing
+  // axes below.
+  schemaVersion: 2,
   platform: platform(),
   arch: arch(),
   nodeMajor: Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10),
@@ -137,19 +142,28 @@ const ensureSubmodules = () => {
   }
 };
 
-// Write the VERSION file each upstream CMake looks for first. When git is
-// available inside the submodule and the checked-out commit is reachable
-// from a tag, prefer `git describe --tags` so the version matches what's
-// actually checked out; otherwise fall back to the constants at the top of
-// this file.
+// Make sure each upstream CMake project can resolve a usable version. Both
+// vendored projects' CMake first tries `${SOURCE_DIR}/VERSION` (or
+// `IGRAPH_VERSION`), then falls back to `git_describe()`, then to a packaging
+// metadata file. We have three layered paths:
 //
-// We MUST NOT accept a bare SHA here: CMake's `project(VERSION ...)`
-// rejects anything that isn't `MAJOR[.MINOR[.PATCH[.TWEAK]]]`, all digits.
-// `git describe --tags --always` falls back to a short SHA on shallow
-// clones (CI submodule checkouts default to `fetch-depth: 1`, so no tags
-// are fetched) and that SHA would crash the configure step with
-// `VERSION "d03122b" format invalid`. Validate the candidate against the
-// CMake-accepted shape before using it.
+//   1. Source checkout with tags reachable from the pinned commit (the
+//      typical local dev case): upstream's CMake `git_describe()` resolves
+//      the version cleanly on its own, so we DO NOTHING. Writing a VERSION
+//      file here would dirty the submodule (`?? VERSION` in `git status`)
+//      for no reason; the build is fully reproducible without it.
+//   2. CI source checkout with shallow submodule fetch (no tags): `git
+//      describe` returns a bare SHA or fails, which CMake's
+//      `project(VERSION ...)` would reject. We write a fallback VERSION file
+//      so configure succeeds. The submodule is in a checkout-only sandbox in
+//      CI, so dirtying it is fine.
+//   3. Tarball install (no `.git` directory at all): same as (2) — we write
+//      the fallback VERSION file.
+//
+// We MUST NOT accept a bare SHA: CMake's `project(VERSION ...)` rejects
+// anything that isn't `MAJOR[.MINOR[.PATCH[.TWEAK]]]`, all digits. Validate
+// the candidate against the CMake-accepted shape before deciding the
+// upstream CMake will handle versioning on its own.
 const CMAKE_VERSION_RE = /^\d+(?:\.\d+){0,3}$/;
 
 const writeVersionFile = (submodule, filename, fallback) => {
@@ -157,11 +171,10 @@ const writeVersionFile = (submodule, filename, fallback) => {
   const dest = join(dir, filename);
   if (existsSync(dest)) return;
 
-  let version = fallback;
-  // No `--always`: if no tag is reachable we want git to fail, not return
-  // a SHA. Some upstreams tag as `v1.2.3`, some as `1.2.3` — strip the
-  // leading `v` so CMake sees a clean digit-only string. Also strip the
-  // `-N-gSHA` suffix `git describe` adds when HEAD is past the last tag.
+  // Some upstreams tag as `v1.2.3`, some as `1.2.3` — strip the leading `v`
+  // so the regex sees a clean digit-only string. Also strip the
+  // `-N-gSHA` suffix `git describe` adds when HEAD is past the last tag;
+  // upstream CMake strips it the same way before passing to `project(...)`.
   const git = spawnSync("git", ["describe", "--tags"], {
     cwd: dir,
     encoding: "utf8",
@@ -169,10 +182,16 @@ const writeVersionFile = (submodule, filename, fallback) => {
   if (git.status === 0) {
     const raw = git.stdout.trim();
     const candidate = raw.replace(/^v/, "").replace(/-\d+-g[0-9a-f]+$/i, "");
-    if (CMAKE_VERSION_RE.test(candidate)) version = candidate;
+    if (CMAKE_VERSION_RE.test(candidate)) {
+      log(`==> ${submodule}: git describe resolves to ${candidate}; skipping ${filename} write`);
+      return;
+    }
   }
-  writeFileSync(dest, `${version}\n`);
-  log(`==> Wrote ${submodule}/${filename}: ${version}`);
+
+  // git couldn't give us a CMake-compatible version. Write the fallback so
+  // configure doesn't fail. This is the shallow-CI / tarball-install path.
+  writeFileSync(dest, `${fallback}\n`);
+  log(`==> Wrote ${submodule}/${filename}: ${fallback} (fallback; git describe unavailable)`);
 };
 
 const writeVendorVersionFiles = () => {
@@ -210,6 +229,14 @@ const cmakeConfigure = (sourceDir, buildDir, extra) => {
           `-DCMAKE_OSX_ARCHITECTURES=${arch()}`,
         ]
       : []),
+    // Pin the MSVC CRT to `/MT` (static release runtime) so igraph +
+    // libleidenalg's static `.lib`s match the `/MT` that node-gyp uses for
+    // `binding.obj`. CMake (3.15+) honours this only when the active
+    // generator is MSVC, so it's a no-op on Linux/macOS, but explicit is
+    // safer than relying on CMake's default. Without this, the Windows
+    // build fails with LNK2038 `RuntimeLibrary` mismatches and a cascade of
+    // `__imp_*` unresolved-externals from the dynamic CRT being half-linked.
+    `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`,
     ...extra,
   ];
   run("cmake", args);

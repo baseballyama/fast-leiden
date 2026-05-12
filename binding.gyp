@@ -48,7 +48,14 @@
           "msvs_settings": {
             "VCCLCompilerTool": {
               "ExceptionHandling": 1,
-              "AdditionalOptions": ["/std:c++17", "/EHsc"]
+              "AdditionalOptions": ["/std:c++17", "/EHsc"],
+              # Force /MT (static CRT) on binding.obj so it matches the
+              # static-CRT build of igraph/libleidenalg in build-deps.mjs.
+              # Node.js was built with /MT, and node-gyp's default tracks
+              # that, but we pin it here so a future node-gyp default
+              # flip (or a Visual Studio policy change) can't silently
+              # reintroduce the LNK2038 RuntimeLibrary mismatch.
+              "RuntimeLibrary": "0"
             }
           }
         }]

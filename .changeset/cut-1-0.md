@@ -52,9 +52,14 @@ New quality gates that land with 1.0:
   test, catching registry-side packaging holes that don't show up
   in `pack-install`.
 - **SBOM** in the release workflow. `release.yml` generates a
-  CycloneDX 1.5 SBOM for the production dependency tree and uploads
-  it as a long-retention artifact alongside the published tarball
-  and npm provenance.
+  CycloneDX 1.5 SBOM for the production dependency tree, uploads it
+  as a 365-day workflow artifact, and attaches it to the GitHub
+  Release as a permanent public asset alongside the published
+  tarball and npm provenance.
+- **CodeQL** (`.github/workflows/codeql.yml`) runs the
+  `security-extended` query packs against both the C/C++ binding
+  (with a real `pnpm build` so CodeQL can observe the compiler
+  invocations) and the TypeScript surface on every PR + weekly.
 
 `SECURITY.md` is updated to drop the pre-1.0 language and describe
 the post-1.0 patch-line policy. `README.md` removes the "not yet
@@ -84,3 +89,21 @@ CI fixes that go in with this cut:
   igraph's own test suite, and `tests/` is correctly stripped from
   the tarball, so the safest path is to turn the option off
   explicitly.
+- **Windows MSVC CRT alignment.** node-gyp builds `binding.obj` with
+  `/MT` (static CRT), but igraph + libleidenalg defaulted to `/MD`
+  (dynamic CRT), so the Windows link step died with LNK2038
+  `RuntimeLibrary` mismatches and a cascade of `__imp_*`
+  unresolved-externals. We pin both ends: `binding.gyp` sets
+  `RuntimeLibrary: "0"` (static release), and `scripts/build-deps.mjs`
+  passes `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` so igraph and
+  libleidenalg produce matching `/MT` `.lib`s. The cache sentinel
+  schemaVersion is bumped to 2 so any pre-existing `/MD` install
+  trees are wiped on next build.
+- **`scripts/build-deps.mjs` no longer dirties `vendor/libleidenalg`.**
+  The script used to unconditionally write a fallback `VERSION` file
+  into each submodule, which left `?? VERSION` in `git status` on
+  every local build. It now only writes the file when `git describe
+--tags` can't resolve a CMake-compatible version (the
+  tarball-install and shallow-CI paths); on a full local clone
+  upstream's own CMake handles versioning and the submodule stays
+  clean.
