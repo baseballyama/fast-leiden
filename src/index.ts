@@ -147,7 +147,7 @@ const validateEdgeListInput = (input: LeidenInput): void => {
           `(${input.weights.length} vs ${input.sources.length})`,
       );
     }
-    validateFiniteWeights(input.weights);
+    validateWeights(input.weights);
   }
 
   validateOptions(input);
@@ -203,7 +203,7 @@ const validateCsrInput = (input: LeidenCsrInput): void => {
           `(${input.weights.length} vs ${input.targets.length})`,
       );
     }
-    validateFiniteWeights(input.weights);
+    validateWeights(input.weights);
   }
 
   validateOptions(input);
@@ -212,11 +212,19 @@ const validateCsrInput = (input: LeidenCsrInput): void => {
 // NaN / Infinity in weights would propagate through libleidenalg and surface
 // as a `quality: NaN` result, silently corrupting the partition score. Reject
 // at the boundary so the failure is visible.
-const validateFiniteWeights = (weights: Float64Array): void => {
+//
+// Negative weights are also rejected: modularity is defined over the
+// non-negative reals, and libleidenalg's CPM partition treats edge weights as
+// a measure of attraction. Allowing negatives lets the algorithm "succeed"
+// while returning a meaningless partition.
+const validateWeights = (weights: Float64Array): void => {
   for (let i = 0; i < weights.length; i++) {
     const w = weights[i]!;
     if (!Number.isFinite(w)) {
       throw new RangeError(`weights[${i}] must be finite, got ${w}`);
+    }
+    if (w < 0) {
+      throw new RangeError(`weights[${i}] must be non-negative, got ${w}`);
     }
   }
 };

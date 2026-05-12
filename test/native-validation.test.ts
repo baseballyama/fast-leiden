@@ -103,3 +103,103 @@ describe("native.leidenFromEdgeListAsync — boundary validation", () => {
     ).rejects.toThrow(/resolution/);
   });
 });
+
+// IsTypedArray() returns true for every typed view (Uint8Array, Float32Array,
+// …), so the previous code happily `As<Uint32Array>()`-cast a Uint8Array,
+// aliasing the underlying buffer at the wrong stride. These tests pin the
+// fix: a wrong-element-type TypedArray is now a TypeError, not silent
+// corruption.
+describe("native.leidenFromEdgeList — TypedArray element type", () => {
+  it("rejects Uint8Array sources", () => {
+    expect(() =>
+      native.leidenFromEdgeList({
+        nodeCount: 2,
+        // @ts-expect-error — wrong typed-array type is exactly what we test
+        sources: new Uint8Array([0]),
+        targets: new Uint32Array([1]),
+      }),
+    ).toThrow(/Uint32Array/);
+  });
+
+  it("rejects Uint8Array targets", () => {
+    expect(() =>
+      native.leidenFromEdgeList({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        // @ts-expect-error
+        targets: new Uint8Array([1]),
+      }),
+    ).toThrow(/Uint32Array/);
+  });
+
+  it("rejects Int32Array sources", () => {
+    expect(() =>
+      native.leidenFromEdgeList({
+        nodeCount: 2,
+        // @ts-expect-error
+        sources: new Int32Array([0]),
+        targets: new Uint32Array([1]),
+      }),
+    ).toThrow(/Uint32Array/);
+  });
+
+  it("rejects Float32Array weights", () => {
+    expect(() =>
+      native.leidenFromEdgeList({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        // @ts-expect-error
+        weights: new Float32Array([1.0]),
+      }),
+    ).toThrow(/Float64Array/);
+  });
+});
+
+describe("native.leidenFromCsr — TypedArray element type", () => {
+  it("rejects Uint8Array offsets", () => {
+    expect(() =>
+      native.leidenFromCsr({
+        nodeCount: 2,
+        // @ts-expect-error
+        offsets: new Uint8Array([0, 1, 1]),
+        targets: new Uint32Array([1]),
+      }),
+    ).toThrow(/Uint32Array/);
+  });
+
+  it("rejects Float32Array weights on CSR", () => {
+    expect(() =>
+      native.leidenFromCsr({
+        ...validCsrBase(),
+        // @ts-expect-error
+        weights: new Float32Array([1.0]),
+      }),
+    ).toThrow(/Float64Array/);
+  });
+});
+
+// Negative weights are undefined for modularity and meaningless for CPM as
+// implemented in libleidenalg. Reject them at the native boundary as well so a
+// deep-import caller can't silently produce a junk partition.
+describe("native — negative weights", () => {
+  it("rejects negative weights on edge list", () => {
+    expect(() =>
+      native.leidenFromEdgeList({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        weights: new Float64Array([-0.5]),
+      }),
+    ).toThrow(/non-negative/);
+  });
+
+  it("rejects negative weights on CSR", () => {
+    expect(() =>
+      native.leidenFromCsr({
+        ...validCsrBase(),
+        weights: new Float64Array([-1.0]),
+      }),
+    ).toThrow(/non-negative/);
+  });
+});

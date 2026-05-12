@@ -172,17 +172,39 @@ LeidenResultC RunLeidenJob(const LeidenJob& job) {
 // JS -> LeidenJob conversion. Validates and copies TypedArrays into vectors
 // owned by the job so we can hand them off to a worker thread safely.
 
-// Defence in depth: TS already rejects NaN / Infinity weights, but bypassing
-// the public API must not silently produce a quality=NaN result.
-bool ValidateFiniteWeights(Napi::Env env, const double* data, size_t n) {
+// Defence in depth: TS already rejects NaN / Infinity / negative weights, but
+// bypassing the public API must not silently produce a quality=NaN result or
+// pass negative weights into modularity / CPM (both are defined over the
+// non-negative reals in libleidenalg's implementation).
+bool ValidateWeights(Napi::Env env, const double* data, size_t n) {
   for (size_t i = 0; i < n; ++i) {
     if (!std::isfinite(data[i])) {
       Napi::RangeError::New(env, "weights[i] must be finite")
           .ThrowAsJavaScriptException();
       return false;
     }
+    if (data[i] < 0.0) {
+      Napi::RangeError::New(env, "weights[i] must be non-negative")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
   }
   return true;
+}
+
+// Defence in depth: IsTypedArray() returns true for Uint8Array / Float32Array /
+// any other view, but As<Napi::Uint32Array>() is an unchecked cast — calling
+// .Data() on a mismatched view aliases the underlying buffer at the wrong
+// stride and silently reads garbage (or walks off the end). Check the actual
+// element type before we trust the cast.
+bool IsExactlyUint32Array(Napi::Value v) {
+  return v.IsTypedArray() &&
+         v.As<Napi::TypedArray>().TypedArrayType() == napi_uint32_array;
+}
+
+bool IsExactlyFloat64Array(Napi::Value v) {
+  return v.IsTypedArray() &&
+         v.As<Napi::TypedArray>().TypedArrayType() == napi_float64_array;
 }
 
 // Defence in depth: Uint32Value() silently coerces 1.5 → 1, -1 → 4294967295,
@@ -271,7 +293,7 @@ bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
 
   Napi::Value sv = input.Get("sources");
   Napi::Value tv = input.Get("targets");
-  if (!sv.IsTypedArray() || !tv.IsTypedArray()) {
+  if (!IsExactlyUint32Array(sv) || !IsExactlyUint32Array(tv)) {
     Napi::TypeError::New(env, "sources and targets must be Uint32Array")
         .ThrowAsJavaScriptException();
     return false;
@@ -289,7 +311,7 @@ bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
 
   Napi::Value wv = input.Get("weights");
   if (!wv.IsUndefined() && !wv.IsNull()) {
-    if (!wv.IsTypedArray()) {
+    if (!IsExactlyFloat64Array(wv)) {
       Napi::TypeError::New(env, "weights must be a Float64Array").ThrowAsJavaScriptException();
       return false;
     }
@@ -299,7 +321,7 @@ bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
           .ThrowAsJavaScriptException();
       return false;
     }
-    if (!ValidateFiniteWeights(env, weights.Data(), edge_count)) return false;
+    if (!ValidateWeights(env, weights.Data(), edge_count)) return false;
     job.weights.assign(weights.Data(), weights.Data() + edge_count);
     job.has_weights = true;
   }
@@ -312,7 +334,7 @@ bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
 
   Napi::Value ov = input.Get("offsets");
   Napi::Value tv = input.Get("targets");
-  if (!ov.IsTypedArray() || !tv.IsTypedArray()) {
+  if (!IsExactlyUint32Array(ov) || !IsExactlyUint32Array(tv)) {
     Napi::TypeError::New(env, "offsets and targets must be Uint32Array")
         .ThrowAsJavaScriptException();
     return false;
@@ -364,7 +386,7 @@ bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
 
   Napi::Value wv = input.Get("weights");
   if (!wv.IsUndefined() && !wv.IsNull()) {
-    if (!wv.IsTypedArray()) {
+    if (!IsExactlyFloat64Array(wv)) {
       Napi::TypeError::New(env, "weights must be a Float64Array").ThrowAsJavaScriptException();
       return false;
     }
@@ -374,7 +396,7 @@ bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
           .ThrowAsJavaScriptException();
       return false;
     }
-    if (!ValidateFiniteWeights(env, weights.Data(), edge_count)) return false;
+    if (!ValidateWeights(env, weights.Data(), edge_count)) return false;
     job.weights.assign(weights.Data(), weights.Data() + edge_count);
     job.has_weights = true;
   }

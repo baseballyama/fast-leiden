@@ -35,6 +35,13 @@
   ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "install": "node scripts/build-deps.mjs && node scripts/write-version-header.mjs && node-gyp rebuild",
     "build": "pnpm build:deps && pnpm build:native && pnpm build:ts",

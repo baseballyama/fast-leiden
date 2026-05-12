@@ -127,3 +127,97 @@ jobs:
           ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1"
           UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
         run: pnpm test
+
+  pack-install:
+    name: Tarball install (Node ${{ matrix.node-version }} / ${{ matrix.os }})
+    needs: static
+    # The other jobs run against the source tree. This one validates the actual
+    # artifact that ships to npm — `pnpm pack` produces the same tarball npm
+    # would download, then a fresh empty project installs from it. Catches
+    # `files` mis-globs, install-hook ordering bugs, and missing vendor sources
+    # that show up only in tarball-install mode.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript output (needed for the tarball)
+        run: pnpm build:ts
+
+      - name: Pack tarball
+        id: pack
+        shell: bash
+        run: |
+          tarball="$(pnpm pack | tail -n 1)"
+          echo "tarball=$(pwd)/${tarball}" >> "$GITHUB_OUTPUT"
+
+      - name: Install tarball into a fresh project
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y
+          npm install --foreground-scripts "${{ steps.pack.outputs.tarball }}"
+
+      - name: Smoke test the installed package
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/consumer"
+          cat > smoke.mjs <<'EOF'
+          import { leiden, version } from "fast-leiden";
+          const v = version();
+          if (typeof v !== "string" || !/^\d+\.\d+\.\d+/.test(v)) {
+            console.error("unexpected version:", v);
+            process.exit(1);
+          }
+          const r = leiden({
+            nodeCount: 6,
+            sources: new Uint32Array([0, 1, 0, 3, 4, 3, 2]),
+            targets: new Uint32Array([1, 2, 2, 4, 5, 5, 5]),
+            seed: 42,
+          });
+          if (r.membership.length !== 6) {
+            console.error("unexpected membership length:", r.membership.length);
+            process.exit(1);
+          }
+          if (r.membership[0] === r.membership[3]) {
+            console.error("two triangles collapsed to one community");
+            process.exit(1);
+          }
+          console.log("tarball smoke OK; version=" + v);
+          EOF
+          node smoke.mjs
+
+      - name: Assert deep imports are blocked by exports
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/consumer"
+          cat > deep-import.mjs <<'EOF'
+          try {
+            await import("fast-leiden/dist/native.js");
+            console.error("expected deep import to be blocked by exports");
+            process.exit(1);
+          } catch (e) {
+            if (e && e.code === "ERR_PACKAGE_PATH_NOT_EXPORTED") {
+              console.log("deep import blocked as expected");
+              process.exit(0);
+            }
+            console.error("unexpected error:", e);
+            process.exit(1);
+          }
+          EOF
+          node deep-import.mjs

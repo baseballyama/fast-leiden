@@ -9,8 +9,8 @@
 // are already installed.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { availableParallelism, platform } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { arch, availableParallelism, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,12 +21,21 @@ import { fileURLToPath } from "node:url";
 const IGRAPH_VERSION_FALLBACK = "1.0.1";
 const LIBLEIDENALG_VERSION_FALLBACK = "0.12.0";
 
+// binding.gyp pins MACOSX_DEPLOYMENT_TARGET to 11.0; the CMake build of the
+// vendored deps must match, otherwise the final `ld` step emits "built for
+// newer macOS version than being linked" warnings and the result is not
+// reproducible across machines with different SDKs. Bump these in lock-step
+// with binding.gyp.
+const MACOS_DEPLOYMENT_TARGET = "11.0";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(here, "..");
 const VENDOR = join(ROOT, "vendor");
 const BUILD_DIR = join(VENDOR, "build-deps");
 const INSTALL_DIR = join(BUILD_DIR, "install");
+const SENTINEL_PATH = join(INSTALL_DIR, ".build-sentinel.json");
 const IS_WIN = platform() === "win32";
+const IS_MAC = platform() === "darwin";
 // On Unix the library files come out as `lib<target>.a`; on Windows MSVC
 // produces `<target>.lib` (no `lib` prefix). The libleidenalg CMake target
 // is named `libleidenalg` so the file is `liblibleidenalg.a` on Unix and
@@ -50,6 +59,57 @@ const run = (cmd, args, opts = {}) => {
   if (res.status !== 0) {
     die(`${cmd} ${args.join(" ")} exited with status ${res.status}`);
   }
+};
+
+// The vendored static libs depend on the host platform, the target arch, and
+// (on macOS) the SDK / deployment target. The presence of the `.a` file alone
+// can't tell us whether it matches the *current* environment — a developer who
+// switched machines, upgraded macOS, or moved between arm64 and x86_64 ends
+// up with a stale install tree that links but then crashes or fails to load.
+//
+// Capture the relevant axes in a sentinel JSON file written next to the libs.
+// On every run we compare the current axes against the recorded ones and wipe
+// the install tree on mismatch so the rebuild is forced.
+const currentBuildAxes = () => ({
+  schemaVersion: 1,
+  platform: platform(),
+  arch: arch(),
+  nodeMajor: Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10),
+  macosDeploymentTarget: IS_MAC ? MACOS_DEPLOYMENT_TARGET : null,
+});
+
+const readSentinel = () => {
+  if (!existsSync(SENTINEL_PATH)) return null;
+  try {
+    return JSON.parse(readFileSync(SENTINEL_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
+const writeSentinel = () => {
+  writeFileSync(SENTINEL_PATH, `${JSON.stringify(currentBuildAxes(), null, 2)}\n`);
+};
+
+const axesEqual = (a, b) =>
+  a !== null &&
+  b !== null &&
+  a.schemaVersion === b.schemaVersion &&
+  a.platform === b.platform &&
+  a.arch === b.arch &&
+  a.nodeMajor === b.nodeMajor &&
+  a.macosDeploymentTarget === b.macosDeploymentTarget;
+
+const invalidateIfStale = () => {
+  const recorded = readSentinel();
+  const current = currentBuildAxes();
+  if (recorded === null) return;
+  if (axesEqual(recorded, current)) return;
+  log(
+    `==> Build sentinel mismatch (was ${JSON.stringify(recorded)}, now ` +
+      `${JSON.stringify(current)}); wiping ${INSTALL_DIR} to force a rebuild.`,
+  );
+  rmSync(INSTALL_DIR, { recursive: true, force: true });
 };
 
 // binding.gyp links against `<INSTALL_DIR>/lib/...` on every platform, so the
@@ -123,6 +183,17 @@ const cmakeConfigure = (sourceDir, buildDir, extra) => {
     `-DCMAKE_INSTALL_LIBDIR=lib`,
     `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`,
     `-DBUILD_SHARED_LIBS=OFF`,
+    // Match binding.gyp on macOS so the static `.a` files and the final
+    // `.node` are linked against the same SDK and the same deployment target.
+    // Without these, the linker warns "object file was built for newer macOS
+    // version than being linked" — a smell that production hits as a real
+    // failure when the SDKs drift further apart.
+    ...(IS_MAC
+      ? [
+          `-DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET}`,
+          `-DCMAKE_OSX_ARCHITECTURES=${arch()}`,
+        ]
+      : []),
     ...extra,
   ];
   run("cmake", args);
@@ -171,9 +242,11 @@ const buildLibleidenalg = () => {
 const main = () => {
   ensureSubmodules();
   writeVendorVersionFiles();
+  invalidateIfStale();
   mkdirSync(INSTALL_DIR, { recursive: true });
   buildIgraph();
   buildLibleidenalg();
+  writeSentinel();
   log(`==> Done. Headers: ${join(INSTALL_DIR, "include")}`);
   log(`==> Libs:    ${join(INSTALL_DIR, "lib")}`);
 };

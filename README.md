@@ -13,8 +13,10 @@ JS allocations, no JSON / IPC serialization).
 
 ## Status
 
-Working end-to-end on macOS and Linux. Modularity and CPM quality functions are
-supported. Both edge-list and CSR input paths are implemented.
+Pre-1.0. Working end-to-end on macOS, Linux, and Windows in CI (Node 22 / 24 /
+26). Modularity and CPM quality functions are supported. Both edge-list and
+CSR input paths are implemented. See [Supported platforms](#supported-platforms)
+and [Known limitations](#known-limitations) before adopting in production.
 
 ## Goals
 
@@ -79,6 +81,104 @@ const resultCsr = await leidenFromCsrAsync({ nodeCount, offsets, targets });
 
 See [`src/types.ts`](./src/types.ts) for the full type definitions.
 
+## API contract
+
+Reading this section before you ship is recommended — it captures the
+behaviour the public API is committed to, including the cases where Leiden's
+semantics differ from a naïve graph-algorithm intuition.
+
+### Input shape
+
+- **Node ids are dense, `[0, nodeCount)`.** Sparse / arbitrary ids are not
+  supported; remap to dense ids before calling.
+- **TypedArrays must be exactly the documented element type.** `sources`,
+  `targets`, `offsets` are `Uint32Array` (not `Int32Array`, `Uint8Array`, or
+  any other view). `weights` is `Float64Array` (not `Float32Array`). The
+  native side checks the element type and throws `TypeError` on mismatch — a
+  `Uint8Array` cast to `uint32_t*` would alias the buffer at the wrong stride.
+- **`weights` are finite and non-negative.** `NaN`, `±Infinity`, and negative
+  values are rejected with `RangeError`. Modularity is defined over the
+  non-negative reals, and `libleidenalg`'s CPM partition treats weights as a
+  measure of attraction.
+- **`weights[i] === 0` is accepted** and treated as "edge present but
+  contributes nothing to the quality score" — equivalent to omitting the edge
+  for modularity.
+- **Self-loops and multi-edges are accepted.** Leiden in `libleidenalg`
+  handles both. They affect the quality score but never crash the algorithm.
+- **Isolated nodes are accepted.** A node with no incident edges ends up in
+  its own community (modularity is maximised that way).
+- **CSR `offsets` must be monotonically non-decreasing, start at 0, and end
+  at the number of edges.** Bad CSR is the most dangerous shape for a native
+  addon — the validator on both sides rejects it before any pointer arithmetic.
+
+### Output shape
+
+- **`membership[i]` is the community id of node `i`** in `[0, nodeCount)`.
+  Community ids are **not stable across runs, seeds, or library versions** —
+  only the _partition_ (the equivalence classes) is meaningful. If you need
+  a stable label, derive your own canonical naming from `membership`.
+- **`quality`** is the final score under the selected quality function. The
+  scale and units differ between `modularity` and `cpm`; do not compare
+  values across quality functions.
+- **`iterations`** is the number of outer-loop iterations actually run, up
+  to `maxIterations`. The algorithm stops early when no further improvement
+  is found.
+
+### Options
+
+- **`qualityFunction`** defaults to `"modularity"`. Only `"cpm"` reads the
+  `resolution` parameter; with `qualityFunction: "modularity"` the value is
+  silently ignored, by design (this matches `leidenalg`).
+- **`resolution`** must be a non-negative finite number. Higher values
+  produce more, smaller communities under CPM.
+- **`maxIterations`** must be a positive integer. The outer Leiden loop runs
+  at most this many times; the algorithm stops early when no further
+  improvement is found.
+- **`seed`** must be an integer in `[0, 2^32)`. Setting it pins the RNG and
+  makes a run deterministic given the same input _and_ the same
+  `libleidenalg` version. Across submodule bumps, the partition may shift.
+- **`directed`** defaults to `false`. Setting it to `true` switches the
+  underlying igraph construction; quality scores under directed and
+  undirected modes are not comparable.
+
+### Async semantics
+
+The async variants (`leidenAsync`, `leidenFromCsrAsync`) run the optimiser on
+a libuv worker thread, but **input validation and the TypedArray-to-vector
+copy happen synchronously on the JS thread before the worker is queued.** For
+multi-million-edge graphs the copy itself is non-trivial — measure on your
+data shape if event-loop stalls matter. There is no cancellation API: once
+queued, the worker runs to completion. If you need a hard deadline, run the
+caller in a worker thread or child process that you can terminate.
+
+## Memory footprint
+
+Rough rule of thumb per call, in addition to the input arrays you allocated:
+
+- One full copy of `sources`, `targets`, and (if provided) `weights` inside
+  the native job, so the worker thread owns its data: roughly `4 + 4 + 8`
+  bytes per edge = **16 B/edge** (12 B/edge without weights).
+- The internal `igraph_t` and `libleidenalg` partition state. Empirically
+  this is on the order of **40–80 B/edge** plus **~24 B/node** for the
+  partition / membership vectors.
+- The returned `membership` `Uint32Array`: 4 B/node.
+
+For 10 M edges + 1 M nodes that's roughly 400–800 MB of _native_ memory in
+addition to the input arrays. Budget accordingly on small VMs or serverless
+runtimes.
+
+## Recommended usage
+
+- **`leiden` / `leidenFromCsr` (sync)**: development, small graphs (rule of
+  thumb: under ~50 K edges), CLIs, batch jobs that don't share the event
+  loop with anything else.
+- **`leidenAsync` / `leidenFromCsrAsync`**: long-lived servers, anything
+  serving concurrent HTTP / RPC traffic, graphs large enough that the input
+  copy _plus_ the optimiser would stall the loop for more than a few
+  milliseconds.
+- **Always prefer CSR for large graphs** if you already have CSR arrays. The
+  edge-list path runs an extra conversion step internally.
+
 ## Install
 
 > Not yet published. The package will be available as `fast-leiden` on npm once
@@ -116,7 +216,10 @@ git submodule update --init --recursive
 
 The first build takes several minutes because `vendor/igraph` and
 `vendor/libleidenalg` are compiled from source via CMake. Subsequent builds
-reuse the install tree under `vendor/build-deps/install/`.
+reuse the install tree under `vendor/build-deps/install/`. The build script
+writes a `.build-sentinel.json` next to the libs capturing the host platform,
+arch, Node major, and macOS deployment target; if any of those change between
+runs, the install tree is wiped and the deps are rebuilt automatically.
 
 ### Reproducible dev environment (Nix)
 
@@ -140,6 +243,55 @@ further setup, and `pnpm bench` finds Python's leidenalg out of the box.
   Windows)
 - CMake >= 3.23 (the requirement comes from `libleidenalg`)
 - Python 3 (for `node-gyp`)
+
+## Supported platforms
+
+CI matrix (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)):
+
+| OS             | Node 22 | Node 24 | Node 26 | Notes                               |
+| -------------- | ------- | ------- | ------- | ----------------------------------- |
+| ubuntu-latest  | ✅      | ✅      | ✅      | glibc; built against the runner SDK |
+| macos-latest   | ✅      | ✅      | ✅      | arm64; deployment target 11.0       |
+| windows-latest | ✅      | ✅      | ✅      | x64; MSVC                           |
+
+In addition:
+
+- **Linux musl (Alpine, distroless musl images)** is not currently part of CI.
+  The source build _should_ work given a musl C++17 toolchain, CMake, and
+  Python, but it is not validated on every commit. If you depend on musl,
+  please file an issue so we can wire it into CI.
+- **macOS x64** is no longer tested directly (`macos-latest` is arm64 on
+  GitHub Actions). The build is universal-2-compatible in theory but the
+  arm64 / x64 split is not exercised here.
+- **Linux arm64** is not currently part of CI.
+
+### Node-API compatibility policy
+
+The native addon is built against Node-API (N-API), which is the stable ABI
+boundary. The `engines.node` constraint in `package.json` (`>=22`) reflects
+which Node majors are actively tested in CI, not a hard ABI requirement.
+Older Node majors will most likely load the addon but are not supported.
+
+### CJS / ESM
+
+The compiled output under `dist/` is **CommonJS** (the package has no
+`"type": "module"` field). Both styles work for consumers:
+
+```ts
+// TypeScript or ESM Node — works via default-export interop
+import { leiden } from "fast-leiden";
+```
+
+```js
+// CommonJS Node
+const { leiden } = require("fast-leiden");
+```
+
+The package's `"exports"` field locks the public API to the single `.`
+subpath. Deep imports such as `import "fast-leiden/dist/native.js"` are
+blocked at the loader level — the native binding is an internal
+implementation detail. If you find yourself wanting one, please file an
+issue describing the use case.
 
 ## Benchmark
 
@@ -173,10 +325,64 @@ fast-leiden/
   tsconfig.json         TypeScript config
 ```
 
+## Known limitations
+
+- **No prebuilt binaries yet.** Every `npm install` runs CMake + the C++
+  toolchain + `node-gyp`; see [Install model and roadmap](#install-model-and-roadmap).
+- **Async input copy is synchronous.** The Leiden optimisation itself runs on
+  a worker thread, but the JS→C++ copy of `sources`, `targets`, and `weights`
+  happens on the JS thread before the worker is queued. For multi-million
+  edge graphs this copy is non-trivial.
+- **No cancellation API.** Once an async call is queued, the worker runs to
+  completion. If you need a deadline, run the caller in a child process or
+  worker thread you can terminate.
+- **Community ids are not stable** across runs, seeds, or `libleidenalg`
+  versions — only the partition (equivalence classes) is meaningful.
+- **No streaming / chunked input.** The whole graph must fit in memory.
+- **Property / fuzz testing and large-graph performance regression are not
+  yet part of CI.** Both are on the roadmap. If you have a representative
+  large graph you can share, please open an issue.
+
+## Troubleshooting
+
+- **`Cannot find module .../build/Release/fast_leiden.node`** — the native
+  addon hasn't been built yet, or was wiped by `pnpm clean`. Run
+  `pnpm build` (or just `pnpm build:native` if vendor deps are already
+  installed).
+- **`build-deps: Found .../lib64/...`** — a stale `vendor/build-deps/install/`
+  from before the libdir pin. Remove `vendor/build-deps` and rebuild.
+- **`object file was built for newer macOS version`** — vendor deps were
+  built against a different SDK / deployment target. The sentinel auto-
+  detects host changes, but if you bump `MACOS_DEPLOYMENT_TARGET` in
+  `scripts/build-deps.mjs` you should also bump
+  `MACOSX_DEPLOYMENT_TARGET` in `binding.gyp`, then rebuild.
+- **`pnpm install` fails on a CI / serverless image without CMake or
+  Python** — there are no prebuilt binaries yet; either provision the
+  toolchain or wait for the `prebuild`-based release. Track the roadmap in
+  [Install model and roadmap](#install-model-and-roadmap).
+
+## Versioning and breaking-change policy
+
+Pre-1.0. We follow Semantic Versioning with the standard pre-1.0 caveat:
+**breaking changes can land in any minor (`0.Y.0`) release**, but every
+breaking change is called out in [`CHANGELOG.md`](./CHANGELOG.md) with the
+migration. Patch (`0.0.Z`) releases are non-breaking. Once we cut 1.0, the
+public API documented in this README becomes the SemVer surface.
+
 ## License
 
-[GPL-3.0-or-later](./LICENSE).
+**GPL-3.0-or-later** — see [`LICENSE`](./LICENSE).
 
-This package links against `igraph` (GPL-2.0-or-later) and `libleidenalg`
-(GPL-3.0-or-later). The combined work is distributed under GPL-3.0-or-later to
-respect both upstream licenses.
+This package statically links against `igraph` (GPL-2.0-or-later) and
+`libleidenalg` (GPL-3.0-or-later). The combined work is distributed under
+GPL-3.0-or-later to respect both upstream licenses.
+
+> ⚠️ **The GPL has substantial consequences for downstream users.** In
+> particular, distributing software that links against `fast-leiden` —
+> directly or transitively — generally obligates you to make the _combined_
+> work available under GPL-3.0-or-later. This is independent of how
+> "production-ready" the code is technically; it is a licensing decision
+> made by `igraph` and `libleidenalg` upstream, and we inherit it.
+>
+> If your project cannot ship under GPL, you should not depend on
+> `fast-leiden`. Consult a lawyer for any non-trivial deployment.

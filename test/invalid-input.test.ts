@@ -79,6 +79,17 @@ describe("leiden() input validation", () => {
     ).toThrow(/weights\[1\] must be finite/);
   });
 
+  it("rejects negative weights", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        weights: new Float64Array([-0.0001]),
+      }),
+    ).toThrow(/weights\[0\] must be non-negative/);
+  });
+
   it("rejects unknown qualityFunction values", () => {
     expect(() =>
       leiden({
