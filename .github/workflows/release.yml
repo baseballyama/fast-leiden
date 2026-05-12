@@ -353,7 +353,9 @@ jobs:
             target="${artifact%-glibc}"
             target="${target%-musl}"
             mkdir -p "prebuilds/${target}"
-            mv "${d}"* "prebuilds/${target}/"
+            # `cp` (not `mv`) so the staging tree stays intact for the
+            # next step's per-artifact verification.
+            cp -r "${d}"* "prebuilds/${target}/"
           done
           ls -la prebuilds/
 
