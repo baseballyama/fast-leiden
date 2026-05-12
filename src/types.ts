@@ -29,6 +29,18 @@ export interface LeidenOptions {
   seed?: number;
   /** Treat the graph as directed. Defaults to `false`. */
   directed?: boolean;
+  /**
+   * Optional AbortSignal to cancel an in-flight async call. Only respected by
+   * `leidenAsync` and `leidenFromCsrAsync` — synchronous calls run on the JS
+   * thread and cannot be interrupted.
+   *
+   * When the signal aborts, the returned Promise rejects immediately with
+   * `signal.reason` (an `AbortError` by default). The native worker thread
+   * may still run to completion in the background; the result is discarded.
+   * We do not currently propagate the cancel into `libleidenalg`. If a hard
+   * deadline matters, run the caller in a child process you can terminate.
+   */
+  signal?: AbortSignal;
 }
 
 /** Edge-list input. */

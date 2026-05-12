@@ -1,0 +1,154 @@
+name: Prebuilds
+
+# Build a platform-specific prebuilt binary for each supported runner and
+# upload it as an artifact. The actual publish-to-npm step is deliberately
+# decoupled — once the matrix completes, a separate release job (run on a
+# tag push with NPM_TOKEN configured) downloads every artifact into
+# `prebuilds/` and runs `npm publish` so the tarball ships with binaries
+# for every platform in the matrix.
+#
+# Trigger:
+#   - manual via workflow_dispatch (for testing the pipeline)
+#   - tag push `v*` (the release path)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prebuild:
+    name: Prebuild ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: windows-latest
+            target: win32-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build prebuild
+        run: pnpm run prebuild
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: prebuilds/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  smoke:
+    name: Smoke ${{ matrix.target }}
+    needs: prebuild
+    runs-on: ${{ matrix.os }}
+    # Pull each platform's freshly-built prebuild back in and verify the
+    # tarball install picks it up via node-gyp-build (skipping the source
+    # build entirely). This is the test that catches "prebuild was built but
+    # node-gyp-build can't find it" — a class of bug that only shows up in
+    # tarball-install mode.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: windows-latest
+            target: win32-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build TypeScript output (needed for the tarball)
+        run: pnpm build:ts
+
+      - name: Download platform prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: prebuilds/${{ matrix.target }}/
+
+      - name: Pack tarball
+        id: pack
+        shell: bash
+        run: |
+          tarball="$(pnpm pack | tail -n 1)"
+          echo "tarball=$(pwd)/${tarball}" >> "$GITHUB_OUTPUT"
+
+      - name: Install tarball into a fresh project (no build toolchain)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y
+          # --ignore-scripts on the consumer is wrong; the consumer's install
+          # script (ours, scripts/install.mjs) is what runs. We only want to
+          # confirm the prebuild path resolves — if it falls through to the
+          # source build, that means node-gyp-build couldn't find the
+          # prebuild and the smoke test below will catch the cost.
+          npm install --foreground-scripts "${{ steps.pack.outputs.tarball }}"
+
+      - name: Confirm prebuild was used
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/consumer"
+          # If node-gyp-build picked up the prebuild, build/Release/ should
+          # NOT exist (we never ran node-gyp rebuild). Use this as a signal.
+          if [ -d node_modules/fast-leiden/build/Release ]; then
+            echo "ERROR: fell through to source build despite prebuild artifact"
+            exit 1
+          fi
+          echo "OK: prebuild was used, no source build was triggered"
+
+      - name: Smoke test the installed package
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/consumer"
+          cat > smoke.mjs <<'EOF'
+          import { leiden, version } from "fast-leiden";
+          if (!/^\d+\.\d+\.\d+/.test(version())) process.exit(1);
+          const r = leiden({
+            nodeCount: 6,
+            sources: new Uint32Array([0, 1, 0, 3, 4, 3, 2]),
+            targets: new Uint32Array([1, 2, 2, 4, 5, 5, 5]),
+            seed: 42,
+          });
+          if (r.membership.length !== 6) process.exit(1);
+          if (r.membership[0] === r.membership[3]) process.exit(1);
+          console.log("prebuild smoke OK");
+          EOF
+          node smoke.mjs

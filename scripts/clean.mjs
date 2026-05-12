@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(here, "..");
 
-const targets = ["dist", "build", "vendor/build-deps"];
+const targets = ["dist", "build", "prebuilds", "vendor/build-deps"];
 
 for (const t of targets) {
   rmSync(resolve(ROOT, t), { recursive: true, force: true });

@@ -1,10 +1,14 @@
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, resolve } from "node:path";
 
-// We resolve the native addon through a CommonJS-style require so that the
-// path stays stable regardless of how the consumer's bundler treats `.node`
-// files. The compiled artifact lives in `build/Release/` after node-gyp runs.
+// We hand the project root to `node-gyp-build`, which is the canonical
+// resolver for native addons: it picks up a platform-specific prebuilt
+// binary from `prebuilds/<platform>-<arch>/` if one was shipped in the
+// tarball, and otherwise falls back to the source build under
+// `build/Release/`. This keeps the require path stable across publish
+// modes (prebuild vs. source) and across bundlers.
 const requireFromHere = createRequire(__filename);
+const projectRoot = resolve(dirname(__filename), "..");
 
 export interface NativeLeidenInput {
   nodeCount: number;
@@ -44,6 +48,6 @@ interface NativeBinding {
   leidenFromCsrAsync(input: NativeLeidenCsrInput): Promise<NativeLeidenResult>;
 }
 
-const bindingPath = join(__dirname, "..", "build", "Release", "fast_leiden.node");
+const loadNative = requireFromHere("node-gyp-build") as (root: string) => NativeBinding;
 
-export const native: NativeBinding = requireFromHere(bindingPath) as NativeBinding;
+export const native: NativeBinding = loadNative(projectRoot);

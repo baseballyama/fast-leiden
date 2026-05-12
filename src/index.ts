@@ -66,7 +66,10 @@ export const leidenFromCsr = (input: LeidenCsrInput): LeidenResult => {
  * {@link leiden}.
  *
  * Prefer this for graphs large enough that the synchronous call would
- * noticeably stall the event loop.
+ * noticeably stall the event loop. Pass `signal` to cancel an in-flight
+ * run — the Promise rejects with `signal.reason`. Note that the worker
+ * thread may continue running until completion; we do not yet propagate
+ * the cancel into libleidenalg.
  */
 export const leidenAsync = (input: LeidenInput): Promise<LeidenResult> => {
   try {
@@ -74,17 +77,19 @@ export const leidenAsync = (input: LeidenInput): Promise<LeidenResult> => {
   } catch (err) {
     return Promise.reject(err);
   }
-  return native.leidenFromEdgeListAsync({
-    nodeCount: input.nodeCount,
-    sources: input.sources,
-    targets: input.targets,
-    weights: input.weights,
-    qualityFunction: input.qualityFunction,
-    resolution: input.resolution,
-    maxIterations: input.maxIterations,
-    seed: input.seed,
-    directed: input.directed,
-  });
+  return runWithSignal(input.signal, () =>
+    native.leidenFromEdgeListAsync({
+      nodeCount: input.nodeCount,
+      sources: input.sources,
+      targets: input.targets,
+      weights: input.weights,
+      qualityFunction: input.qualityFunction,
+      resolution: input.resolution,
+      maxIterations: input.maxIterations,
+      seed: input.seed,
+      directed: input.directed,
+    }),
+  );
 };
 
 /** Asynchronous CSR variant. See {@link leidenAsync}. */
@@ -94,16 +99,47 @@ export const leidenFromCsrAsync = (input: LeidenCsrInput): Promise<LeidenResult>
   } catch (err) {
     return Promise.reject(err);
   }
-  return native.leidenFromCsrAsync({
-    nodeCount: input.nodeCount,
-    offsets: input.offsets,
-    targets: input.targets,
-    weights: input.weights,
-    qualityFunction: input.qualityFunction,
-    resolution: input.resolution,
-    maxIterations: input.maxIterations,
-    seed: input.seed,
-    directed: input.directed,
+  return runWithSignal(input.signal, () =>
+    native.leidenFromCsrAsync({
+      nodeCount: input.nodeCount,
+      offsets: input.offsets,
+      targets: input.targets,
+      weights: input.weights,
+      qualityFunction: input.qualityFunction,
+      resolution: input.resolution,
+      maxIterations: input.maxIterations,
+      seed: input.seed,
+      directed: input.directed,
+    }),
+  );
+};
+
+// Wrap an async native call with AbortSignal-style cancellation. The native
+// worker is not (yet) cooperatively cancellable, so on abort we fire-and-
+// forget: the Promise rejects immediately with `signal.reason`, and any
+// later resolution from the worker is dropped. This is documented in
+// LeidenOptions["signal"] and in README "Known limitations".
+const runWithSignal = (
+  signal: AbortSignal | undefined,
+  start: () => Promise<LeidenResult>,
+): Promise<LeidenResult> => {
+  if (signal === undefined) return start();
+  if (signal.aborted) return Promise.reject(signal.reason);
+
+  return new Promise<LeidenResult>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => settle(() => reject(signal.reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+    start().then(
+      (result) => settle(() => resolve(result)),
+      (err) => settle(() => reject(err)),
+    );
   });
 };
 

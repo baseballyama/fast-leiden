@@ -147,9 +147,38 @@ The async variants (`leidenAsync`, `leidenFromCsrAsync`) run the optimiser on
 a libuv worker thread, but **input validation and the TypedArray-to-vector
 copy happen synchronously on the JS thread before the worker is queued.** For
 multi-million-edge graphs the copy itself is non-trivial — measure on your
-data shape if event-loop stalls matter. There is no cancellation API: once
-queued, the worker runs to completion. If you need a hard deadline, run the
-caller in a worker thread or child process that you can terminate.
+data shape if event-loop stalls matter.
+
+Async calls accept an `AbortSignal` via the `signal` option:
+
+```ts
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30_000); // 30s deadline
+
+try {
+  const result = await leidenAsync({
+    nodeCount,
+    sources,
+    targets,
+    signal: controller.signal,
+  });
+} catch (err) {
+  if ((err as Error).name === "AbortError") {
+    // …respond to the deadline
+  } else throw err;
+}
+
+// AbortSignal.timeout() works too:
+await leidenAsync({ nodeCount, sources, targets, signal: AbortSignal.timeout(5_000) });
+```
+
+When the signal aborts, the returned Promise rejects **immediately** with
+`signal.reason` (an `AbortError` by default). The native worker thread may
+continue running until it completes — we don't yet propagate the cancel into
+`libleidenalg` — but the JS-side handle is released and the worker's result
+is silently discarded. If you need a hard CPU-and-memory deadline (not just
+a "your code unblocks" deadline), run the caller in a `worker_threads`
+worker or a child process that you can terminate.
 
 ## Memory footprint
 
@@ -184,19 +213,32 @@ runtimes.
 > Not yet published. The package will be available as `fast-leiden` on npm once
 > the initial release is cut.
 
-### Install model and roadmap
+### Install model
 
-Today the npm package ships the `igraph` and `libleidenalg` sources under
-`vendor/`, and the `install` lifecycle hook runs CMake + the C++ toolchain on
-the consumer's machine to produce the `.node` addon. That means every install
-requires CMake, a C++17 compiler, and Python (for `node-gyp`) — and the first
-install takes several minutes.
+The npm tarball ships **prebuilt binaries via [`prebuildify`](https://github.com/prebuild/prebuildify)**
+for the platforms in our release matrix:
 
-This is a deliberate trade-off for the early releases (it keeps the package
-small, auditable, and works on any platform the toolchain supports), not a
-long-term goal. **Prebuilt binaries via `prebuild` / `prebuild-install` are on
-the roadmap** before 1.0; once those land, the source build will become an
-opt-in fallback rather than the default.
+| Platform               | Status                                     |
+| ---------------------- | ------------------------------------------ |
+| `linux-x64`            | ✅ prebuilt                                |
+| `darwin-arm64`         | ✅ prebuilt                                |
+| `darwin-x64`           | ✅ prebuilt                                |
+| `win32-x64`            | ✅ prebuilt                                |
+| `linux-arm64`, musl, … | ❌ not yet — file an issue if you need one |
+
+`scripts/install.mjs` runs as the `install` lifecycle script. It looks for a
+prebuild matching the current `<platform>-<arch>` via
+[`node-gyp-build`](https://github.com/prebuild/node-gyp-build); if one exists,
+no toolchain is required. If no prebuild matches (or you're installing from
+a git checkout), it falls back to the **source build**: CMake builds the
+vendored `igraph` and `libleidenalg` static libs, then `node-gyp rebuild`
+compiles the addon against them. The source build needs CMake, a C++17
+toolchain, and Python 3, and takes several minutes the first time.
+
+The tarball still ships the vendored sources so the source-build fallback
+works on any platform that has the toolchain. If you're packaging into a
+container where every byte matters, you can strip `vendor/` after install
+once the addon is built.
 
 For local development:
 
@@ -327,21 +369,28 @@ fast-leiden/
 
 ## Known limitations
 
-- **No prebuilt binaries yet.** Every `npm install` runs CMake + the C++
-  toolchain + `node-gyp`; see [Install model and roadmap](#install-model-and-roadmap).
+- **Source build needed off the prebuild matrix.** Prebuilds cover
+  `linux-x64`, `darwin-arm64`, `darwin-x64`, and `win32-x64`. Other targets
+  (Linux arm64, musl, FreeBSD …) fall through to the source build at install
+  time and need CMake + a C++17 toolchain + Python. See
+  [Install model](#install-model).
 - **Async input copy is synchronous.** The Leiden optimisation itself runs on
   a worker thread, but the JS→C++ copy of `sources`, `targets`, and `weights`
   happens on the JS thread before the worker is queued. For multi-million
   edge graphs this copy is non-trivial.
-- **No cancellation API.** Once an async call is queued, the worker runs to
-  completion. If you need a deadline, run the caller in a child process or
-  worker thread you can terminate.
+- **Cancellation is JS-side only.** `leidenAsync` / `leidenFromCsrAsync`
+  accept an `AbortSignal`; on abort the returned Promise rejects with
+  `signal.reason` immediately, but the native worker keeps running to
+  completion (we don't yet propagate the cancel into libleidenalg). Wasted
+  CPU is bounded by the size of the graph, but if you need a hard deadline
+  for very large graphs, run the caller in a child process you can terminate.
 - **Community ids are not stable** across runs, seeds, or `libleidenalg`
   versions — only the partition (equivalence classes) is meaningful.
 - **No streaming / chunked input.** The whole graph must fit in memory.
-- **Property / fuzz testing and large-graph performance regression are not
-  yet part of CI.** Both are on the roadmap. If you have a representative
-  large graph you can share, please open an issue.
+- **Performance regression and large-graph soak tests are not yet part of
+  CI.** Property-based fuzzing of the validator boundary runs in CI via
+  `fast-check`. If you have a representative large graph you can share for
+  perf testing, please open an issue.
 
 ## Troubleshooting
 
@@ -360,6 +409,22 @@ fast-leiden/
   Python** — there are no prebuilt binaries yet; either provision the
   toolchain or wait for the `prebuild`-based release. Track the roadmap in
   [Install model and roadmap](#install-model-and-roadmap).
+
+## Submodule update policy
+
+`vendor/igraph` and `vendor/libleidenalg` are pinned via git submodule. We
+**follow upstream on a best-effort basis**:
+
+- We bump submodules when an upstream release fixes a bug we hit, ships a
+  security fix, or adds a feature we need. There is **no fixed cadence**.
+- If upstream lands a fix you care about, file an issue with the commit /
+  release link and we'll prioritise the bump.
+- Submodule bumps that change deterministic partition output, ABI, or
+  behaviour are called out in [`CHANGELOG.md`](./CHANGELOG.md). Pre-1.0,
+  these can land in any **minor** release; once we cut 1.0 they become
+  major bumps.
+- Each bump goes through the full CI matrix (Linux/macOS/Windows × Node
+  22 / 24 / 26 plus the ASan/UBSan job) before merge.
 
 ## Versioning and breaking-change policy
 
