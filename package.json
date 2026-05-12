@@ -1,6 +1,6 @@
 {
   "name": "fast-leiden",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Fast Leiden community detection for Node.js, powered by native igraph/leidenalg bindings.",
   "keywords": [
     "clustering",
@@ -36,6 +36,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
+    "install": "node scripts/build-deps.mjs && node-gyp rebuild",
     "build": "pnpm build:deps && pnpm build:native && pnpm build:ts",
     "build:deps": "node scripts/build-deps.mjs",
     "build:native": "node-gyp rebuild",

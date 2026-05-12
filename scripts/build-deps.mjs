@@ -9,10 +9,17 @@
 // are already installed.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { availableParallelism, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// igraph + libleidenalg detect their version via `git describe`. That breaks
+// when the submodules ship inside an npm tarball with no .git directory, so
+// we hand each CMake project a static VERSION file before configuring.
+// Update these when bumping submodule pins.
+const IGRAPH_VERSION_FALLBACK = "1.0.1";
+const LIBLEIDENALG_VERSION_FALLBACK = "0.12.0";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(here, "..");
@@ -59,6 +66,33 @@ const ensureSubmodules = () => {
       die(`vendor/${name} is missing. Run:\n  git submodule update --init --recursive`);
     }
   }
+};
+
+// Write the VERSION file each upstream CMake looks for first. When git is
+// available inside the submodule, prefer `git describe --tags` so the version
+// matches what's actually checked out; otherwise fall back to the constants
+// at the top of this file.
+const writeVersionFile = (submodule, filename, fallback) => {
+  const dir = join(VENDOR, submodule);
+  const dest = join(dir, filename);
+  if (existsSync(dest)) return;
+
+  let version = fallback;
+  const git = spawnSync("git", ["describe", "--tags", "--always"], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  if (git.status === 0) {
+    const candidate = git.stdout.trim();
+    if (candidate) version = candidate;
+  }
+  writeFileSync(dest, `${version}\n`);
+  log(`==> Wrote ${submodule}/${filename}: ${version}`);
+};
+
+const writeVendorVersionFiles = () => {
+  writeVersionFile("igraph", "IGRAPH_VERSION", IGRAPH_VERSION_FALLBACK);
+  writeVersionFile("libleidenalg", "VERSION", LIBLEIDENALG_VERSION_FALLBACK);
 };
 
 const jobs = () => String(availableParallelism?.() ?? 4);
@@ -121,6 +155,7 @@ const buildLibleidenalg = () => {
 
 const main = () => {
   ensureSubmodules();
+  writeVendorVersionFiles();
   mkdirSync(INSTALL_DIR, { recursive: true });
   buildIgraph();
   buildLibleidenalg();

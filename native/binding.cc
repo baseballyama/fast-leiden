@@ -31,7 +31,7 @@
 
 namespace {
 
-constexpr const char* kAddonVersion = "0.1.0";
+constexpr const char* kAddonVersion = "0.0.1";
 
 // ---------------------------------------------------------------------------
 // Small RAII helpers.
