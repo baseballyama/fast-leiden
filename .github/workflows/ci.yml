@@ -82,3 +82,48 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
+
+  sanitizers:
+    name: Sanitizers (ASan + UBSan, Linux)
+    needs: static
+    runs-on: ubuntu-latest
+    # The sanitizers job is the safety net for the C/C++ boundary. We rebuild
+    # the addon with -fsanitize=address,undefined and run the regular test
+    # suite under LD_PRELOAD'd libasan so any out-of-bounds write or undefined
+    # behaviour from a malformed CSR / edge-list input surfaces here.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Cache vendor build-deps (sanitizers)
+        uses: actions/cache@v4
+        with:
+          path: vendor/build-deps
+          key: ${{ runner.os }}-build-deps-san-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build vendor deps + native addon with ASan/UBSan
+        env:
+          CFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          CXXFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          LDFLAGS: "-fsanitize=address,undefined"
+        run: |
+          pnpm build:deps
+          pnpm build:native
+          pnpm build:ts
+
+      - name: Run tests under ASan/UBSan
+        env:
+          # Node was not built with sanitizers, so LD_PRELOAD the runtime.
+          LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libasan.so.8
+          ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1"
+          UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+        run: pnpm test

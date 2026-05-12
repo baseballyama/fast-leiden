@@ -7,8 +7,9 @@ Node.js process, without spawning a Python worker. It wraps the C/C++ reference
 implementations of [`igraph`](https://igraph.org/) and
 [`libleidenalg`](https://github.com/vtraag/libleidenalg) (the C++ core extracted
 from [`leidenalg`](https://github.com/vtraag/leidenalg)) via N-API and exposes a
-TypeScript-first API that prefers `Uint32Array` / `Float64Array` for zero-copy
-data transfer on large graphs.
+TypeScript-first API built around `Uint32Array` / `Float64Array` so the V8 ↔ C++
+hand-off stays compact and predictable (one bulk copy per array — no per-edge
+JS allocations, no JSON / IPC serialization).
 
 ## Status
 
@@ -19,8 +20,10 @@ supported. Both edge-list and CSR input paths are implemented.
 
 - Run Leiden from a Node.js server without a Python sidecar.
 - Provide an ergonomic TypeScript API for large graphs.
-- Prefer TypedArray (`Uint32Array` / `Float64Array`) inputs and outputs to
-  minimize copies.
+- Use TypedArray (`Uint32Array` / `Float64Array`) inputs and outputs so the V8
+  ↔ C++ hand-off is a single bulk memcpy per array, not a per-edge JS-object
+  walk. (The native side still keeps an owned copy so the algorithm can run on
+  a worker thread safely; this is a trade-off, not true zero-copy.)
 - Keep the C/C++ reference implementations available as git submodules under
   `vendor/` so contributors can inspect and step through the source.
 
@@ -49,7 +52,8 @@ const result = leiden({
   directed: false,
 });
 
-// CSR input — preferred for large graphs
+// CSR input — preferred when you already hold CSR arrays. Skips the
+// edge-list → CSR conversion that leiden() does internally.
 const resultCsr = leidenFromCsr({
   nodeCount,
   offsets, // Uint32Array, length = nodeCount + 1

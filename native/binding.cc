@@ -168,7 +168,9 @@ LeidenResultC RunLeidenJob(const LeidenJob& job) {
 // JS -> LeidenJob conversion. Validates and copies TypedArrays into vectors
 // owned by the job so we can hand them off to a worker thread safely.
 
-void ApplyOptions(Napi::Object& obj, LeidenJob& job) {
+// Returns true on success. On failure, raises a JS exception and returns false
+// so the caller can short-circuit (consistent with ReadEdgeListJob / ReadCsrJob).
+bool ApplyOptions(Napi::Env env, Napi::Object& obj, LeidenJob& job) {
   Napi::Value q = obj.Get("qualityFunction");
   if (q.IsString()) {
     job.quality_function = q.As<Napi::String>().Utf8Value();
@@ -183,13 +185,25 @@ void ApplyOptions(Napi::Object& obj, LeidenJob& job) {
   }
   Napi::Value seed = obj.Get("seed");
   if (seed.IsNumber()) {
+    // Defence in depth: the TS layer already constrains this, but Uint32Value()
+    // would silently coerce e.g. -1 or NaN into surprising values. Reject any
+    // non-integer or out-of-range seed here so determinism contracts hold even
+    // if a caller bypasses the public API.
+    double raw = seed.As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(raw) || raw < 0.0 || raw > 4294967295.0 ||
+        raw != std::floor(raw)) {
+      Napi::RangeError::New(env, "seed must be an integer in [0, 2^32)")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
     job.has_seed = true;
-    job.seed = seed.As<Napi::Number>().Uint32Value();
+    job.seed = static_cast<uint32_t>(raw);
   }
   Napi::Value dir = obj.Get("directed");
   if (dir.IsBoolean()) {
     job.directed = dir.As<Napi::Boolean>().Value();
   }
+  return true;
 }
 
 // Returns true on success, false on validation failure (in which case a JS
@@ -235,8 +249,7 @@ bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
     job.has_weights = true;
   }
 
-  ApplyOptions(input, job);
-  return true;
+  return ApplyOptions(env, input, job);
 }
 
 bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
@@ -262,11 +275,30 @@ bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
     return false;
   }
   const uint32_t* offsets_data = offsets.Data();
+  if (job.node_count > 0 && offsets_data[0] != 0) {
+    Napi::RangeError::New(env, "offsets[0] must be 0").ThrowAsJavaScriptException();
+    return false;
+  }
   const uint32_t edge_count = offsets_data[job.node_count];
   if (targets.ElementLength() != edge_count) {
     Napi::RangeError::New(env, "targets length must match offsets[-1]")
         .ThrowAsJavaScriptException();
     return false;
+  }
+  // Defence in depth: the TS layer already enforces monotonicity, but a caller
+  // that bypasses the public API (e.g. directly via the native addon) must
+  // still not be able to drive us into an out-of-bounds write below.
+  for (uint32_t v = 0; v < job.node_count; ++v) {
+    if (offsets_data[v + 1] < offsets_data[v]) {
+      Napi::RangeError::New(env, "offsets must be non-decreasing")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
+    if (offsets_data[v + 1] > edge_count) {
+      Napi::RangeError::New(env, "offsets values must not exceed offsets[-1]")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
   }
 
   job.targets.assign(targets.Data(), targets.Data() + edge_count);
@@ -295,8 +327,7 @@ bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
     job.has_weights = true;
   }
 
-  ApplyOptions(input, job);
-  return true;
+  return ApplyOptions(env, input, job);
 }
 
 Napi::Object BuildResultObject(Napi::Env env, const LeidenResultC& result) {

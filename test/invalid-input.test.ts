@@ -77,4 +77,86 @@ describe("leidenFromCsr() input validation", () => {
       }),
     ).toThrow(/targets length/);
   });
+
+  // Without this check, a non-zero offsets[0] could let the native side write
+  // past the start of the sources buffer.
+  it("rejects offsets that do not start at 0", () => {
+    expect(() =>
+      leidenFromCsr({
+        nodeCount: 2,
+        offsets: new Uint32Array([1, 1, 1]),
+        targets: new Uint32Array([0]),
+      }),
+    ).toThrow(/offsets\[0\] must be 0/);
+  });
+
+  // The dangerous case: an offset decreases and then the per-row loop in C++
+  // writes job.sources[e] = v at e < start, blowing past the resized buffer.
+  it("rejects non-monotonic offsets", () => {
+    expect(() =>
+      leidenFromCsr({
+        nodeCount: 3,
+        offsets: new Uint32Array([0, 2, 1, 3]),
+        targets: new Uint32Array([0, 0, 0]),
+      }),
+    ).toThrow(/non-decreasing/);
+  });
+
+  it("rejects an interior offset that exceeds offsets[-1]", () => {
+    expect(() =>
+      leidenFromCsr({
+        nodeCount: 2,
+        offsets: new Uint32Array([0, 99, 1]),
+        targets: new Uint32Array([0]),
+      }),
+    ).toThrow(/non-decreasing|exceeds/);
+  });
+});
+
+describe("leiden() seed validation", () => {
+  // Uint32Value() on the native side would silently coerce these into wrong
+  // seeds, breaking the determinism contract.
+  it("rejects a negative seed", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        seed: -1,
+      }),
+    ).toThrow(/seed/);
+  });
+
+  it("rejects a fractional seed", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        seed: 1.5,
+      }),
+    ).toThrow(/seed/);
+  });
+
+  it("rejects NaN as a seed", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        seed: Number.NaN,
+      }),
+    ).toThrow(/seed/);
+  });
+
+  it("rejects a seed above 2^32 - 1", () => {
+    expect(() =>
+      leiden({
+        nodeCount: 2,
+        sources: new Uint32Array([0]),
+        targets: new Uint32Array([1]),
+        seed: 2 ** 32,
+      }),
+    ).toThrow(/seed/);
+  });
 });

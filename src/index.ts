@@ -160,7 +160,25 @@ const validateCsrInput = (input: LeidenCsrInput): void => {
   if (!(input.targets instanceof Uint32Array)) {
     throw new TypeError("targets must be a Uint32Array");
   }
+  // offsets[0] must be 0 and the array must be monotonically non-decreasing.
+  // Without these checks a malformed CSR can drive the native side into an
+  // out-of-bounds write (see ReadCsrJob in native/binding.cc).
+  if (input.offsets[0] !== 0) {
+    throw new RangeError(`offsets[0] must be 0, got ${input.offsets[0]}`);
+  }
   const expectedEdgeCount = input.offsets[input.offsets.length - 1] ?? 0;
+  for (let i = 1; i < input.offsets.length; i++) {
+    const prev = input.offsets[i - 1]!;
+    const cur = input.offsets[i]!;
+    if (cur < prev) {
+      throw new RangeError(
+        `offsets must be non-decreasing (offsets[${i - 1}]=${prev} > offsets[${i}]=${cur})`,
+      );
+    }
+    if (cur > expectedEdgeCount) {
+      throw new RangeError(`offsets[${i}]=${cur} exceeds offsets[-1]=${expectedEdgeCount}`);
+    }
+  }
   if (input.targets.length !== expectedEdgeCount) {
     throw new RangeError(
       `targets length must match offsets[-1] ` +
@@ -205,5 +223,13 @@ const validateOptions = (input: LeidenInput | LeidenCsrInput): void => {
     throw new TypeError(
       `qualityFunction must be "modularity" or "cpm", got ${String(input.qualityFunction)}`,
     );
+  }
+  if (input.seed !== undefined) {
+    // The native side calls Uint32Value(), which silently converts -1, 1.5,
+    // NaN, and Infinity into something the caller didn't ask for. Reject those
+    // here so determinism contracts hold.
+    if (!Number.isInteger(input.seed) || input.seed < 0 || input.seed > 0xffffffff) {
+      throw new RangeError(`seed must be an integer in [0, 2^32), got ${String(input.seed)}`);
+    }
   }
 };
