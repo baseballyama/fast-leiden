@@ -1,0 +1,163 @@
+name: Post-publish smoke
+
+# Install the package from the npm registry into a clean container and run
+# a smoke test, on every Tier 1 platform.
+#
+# This is the final safety net after `release.yml` publishes. The CI
+# matrix in `ci.yml` exercises the source tree; the `pack-install` job
+# exercises a packed tarball. Neither catches "the file got published
+# but registry-side packaging dropped a prebuild" — only an actual
+# `npm install fast-leiden` from the registry can.
+#
+# Two triggers:
+#   - `release` event of type `published` — fires automatically when
+#     changesets/action creates the GitHub Release.
+#   - `workflow_dispatch` — manual rerun (use to verify a specific
+#     version after a hotfix or to sanity-check the registry without
+#     cutting a new release).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to install (default: latest)"
+        default: "latest"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-publish-smoke-${{ github.event.release.tag_name || github.event.inputs.version || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Registry smoke (${{ matrix.target }} / Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-glibc
+            os: ubuntu-latest
+            container: ""
+            node: "22"
+          - target: linux-x64-glibc
+            os: ubuntu-latest
+            container: ""
+            node: "24"
+          - target: linux-x64-musl
+            os: ubuntu-latest
+            container: node:22-alpine
+            node: "22"
+          - target: linux-arm64-glibc
+            os: ubuntu-24.04-arm
+            container: ""
+            node: "22"
+          - target: linux-arm64-musl
+            os: ubuntu-24.04-arm
+            container: node:22-alpine
+            node: "22"
+          - target: darwin-arm64
+            os: macos-latest
+            container: ""
+            node: "22"
+          - target: darwin-x64
+            os: macos-13
+            container: ""
+            node: "22"
+          - target: win32-x64
+            os: windows-latest
+            container: ""
+            node: "22"
+    steps:
+      - name: Install minimal Alpine deps
+        if: startsWith(matrix.container, 'node:')
+        shell: sh
+        run: apk add --no-cache bash curl
+
+      - name: Set up Node.js
+        # Skip on Alpine — the container already provides Node 22. The
+        # actions/setup-node action requires glibc and fails on musl.
+        if: matrix.container == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Resolve target version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            # GitHub Release tags are like "fast-leiden@1.2.3"; strip the
+            # prefix so npm install gets a clean version specifier.
+            tag="${{ github.event.release.tag_name }}"
+            version="${tag##*@}"
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="latest"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved target version: ${version}"
+
+      - name: Create consumer project
+        shell: bash
+        run: |
+          mkdir -p consumer && cd consumer
+          npm init -y >/dev/null
+          # No build toolchain — we want the install to succeed entirely
+          # via the prebuild path. If the registry tarball is missing a
+          # prebuild for this target, the install fails and so does the
+          # job, which is exactly the signal we want.
+          npm install --foreground-scripts "fast-leiden@${{ steps.ver.outputs.version }}"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          cd consumer
+          cat > smoke.mjs <<'EOF'
+          import { leiden, leidenAsync, version } from "fast-leiden";
+          const v = version();
+          if (typeof v !== "string" || !/^\d+\.\d+\.\d+/.test(v)) {
+            console.error("unexpected version:", v);
+            process.exit(1);
+          }
+          const input = {
+            nodeCount: 6,
+            sources: new Uint32Array([0, 1, 0, 3, 4, 3, 2]),
+            targets: new Uint32Array([1, 2, 2, 4, 5, 5, 5]),
+            seed: 42,
+          };
+          const sync = leiden(input);
+          if (sync.membership.length !== 6) process.exit(2);
+          if (sync.membership[0] === sync.membership[3]) {
+            console.error("two triangles collapsed under sync run");
+            process.exit(3);
+          }
+          const async_ = await leidenAsync(input);
+          if (async_.membership.length !== 6) process.exit(4);
+          if (async_.membership[0] === async_.membership[3]) {
+            console.error("two triangles collapsed under async run");
+            process.exit(5);
+          }
+          console.log("registry smoke OK; version=" + v);
+          EOF
+          node smoke.mjs
+
+      - name: Confirm prebuild path (no source build)
+        # If the consumer fell through to a source build, the
+        # `build/Release/` directory would exist. Treat that as a
+        # release-engineering bug — registry users shouldn't need a
+        # C++ toolchain on a Tier 1 platform.
+        shell: bash
+        run: |
+          cd consumer
+          if [ -d node_modules/fast-leiden/build/Release ]; then
+            echo "ERROR: source build was triggered on a Tier 1 platform"
+            exit 1
+          fi
+          echo "OK: prebuild path used"

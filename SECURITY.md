@@ -27,5 +27,11 @@ themselves), and concerns about the GPL-3.0-or-later license itself.
 
 ## Supported versions
 
-We patch the most recent minor release line. Pre-1.0, this is the latest
-`0.Y.x` release. After 1.0, the latest `X.Y.x` of the current major.
+We patch the most recent minor release line of the current major.
+Concretely: the latest `X.Y.x` of the latest `X.0.0` series. Older
+majors are not supported once a new major ships; backporting fixes
+across majors is best-effort and depends on the severity of the issue.
+
+Security fixes are released as **patch** versions whenever possible,
+even when the underlying change would otherwise warrant a minor
+(e.g., a vendor submodule bump that fixes a CVE).

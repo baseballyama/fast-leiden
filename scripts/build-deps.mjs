@@ -237,6 +237,11 @@ const buildIgraph = () => {
     "-DIGRAPH_USE_INTERNAL_PLFIT=ON",
     "-DIGRAPH_GLPK_SUPPORT=OFF",
     "-DIGRAPH_OPENMP_SUPPORT=OFF",
+    // We never run igraph's own test suite; disabling BUILD_TESTING
+    // (which CTest turns on by default) skips the add_subdirectory(tests)
+    // step that would otherwise need the tests/ tree we strip out of
+    // the published tarball.
+    "-DBUILD_TESTING=OFF",
   ]);
   log("==> Building igraph (this can take several minutes)");
   cmakeBuildInstall(join(BUILD_DIR, "igraph"));

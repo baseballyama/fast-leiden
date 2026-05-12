@@ -53,6 +53,21 @@ jobs:
       - name: Build (deps + native addon + TypeScript)
         run: pnpm build
 
+      - name: Coverage (gate ≥ 85% lines)
+        # The threshold is enforced by `vitest run --coverage`; it exits
+        # non-zero if any of (lines / statements / functions / branches)
+        # falls below the bar in `vitest.config.ts`.
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.os }})
     # No `needs: static` — GitHub Actions does not expand a matrix when the
@@ -78,6 +93,26 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
+      # Windows runners don't ship bison / flex. igraph's
+      # src/CMakeLists.txt unconditionally calls bison_target() /
+      # flex_target() when the pre-generated parser sources aren't
+      # present (they aren't, in upstream's submodule), so without
+      # these tools the configure step dies with
+      # `Unknown CMake command "bison_target"`. winflexbison3 provides
+      # both `win_bison` and `win_flex`; we point CMake at them through
+      # env vars FindBISON / FindFLEX honour.
+      - name: Install bison + flex (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install --no-progress -y winflexbison3
+          $tool = (Get-ChildItem -Path "$env:ChocolateyInstall\lib\winflexbison3\tools" -Filter "win_bison.exe" -Recurse | Select-Object -First 1).FullName
+          if (-not $tool) { throw "win_bison.exe not found after install" }
+          $dir = Split-Path $tool
+          echo "BISON_EXECUTABLE=$dir\win_bison.exe" >> $env:GITHUB_ENV
+          echo "FLEX_EXECUTABLE=$dir\win_flex.exe"  >> $env:GITHUB_ENV
+          echo "$dir" >> $env:GITHUB_PATH
+
       - name: Cache vendor build-deps
         uses: actions/cache@v4
         with:
@@ -87,6 +122,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
+      # Perf regression gate. The bench is small (~5K nodes / ~30K
+      # edges) so the matrix as a whole stays under a few seconds, but
+      # a 5× regression in the inner loop would still trip the budget.
+      # Soak (`.github/workflows/soak.yml`) handles the large-graph
+      # signal weekly; this is the "every PR" early warning.
+      - name: Perf gate
+        run: pnpm perf-gate
 
   sanitizers:
     name: Sanitizers (ASan + UBSan, Linux)

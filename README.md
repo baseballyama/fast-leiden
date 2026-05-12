@@ -13,16 +13,19 @@ JS allocations, no JSON / IPC serialization).
 
 ## Status
 
-Pre-1.0. Working end-to-end on macOS, Linux, and Windows in CI (Node 22 / 24 /
-26). Shipped as an **ES module** with `"type": "module"`. Modularity and CPM
-quality functions are supported. Both edge-list and CSR input paths are
-implemented. Prebuilt binaries for the major platforms; async runs support
-`AbortSignal` (soft cancel). Every call into the native side is serialized
-by a process-global mutex (igraph upstream is not thread-safe), so
-`Promise.all` of async calls completes correctly but does not run in
-parallel. See [Supported platforms](#supported-platforms) and
-[Known limitations](#known-limitations) before adopting in production. To
-report a security issue, see [SECURITY.md](./SECURITY.md).
+**1.0 — stable public API.** Working end-to-end on macOS, Linux, and
+Windows in CI (Node 22 / 24 / 26). Shipped as an **ES module** with
+`"type": "module"`. Modularity and CPM quality functions are supported.
+Both edge-list and CSR input paths are implemented. Prebuilt binaries
+for every Tier 1 platform; async runs support `AbortSignal` (soft
+cancel — see [Async semantics](#async-semantics)). Every call into the
+native side is serialized by a process-global mutex (igraph upstream
+is not thread-safe), so `Promise.all` of async calls completes
+correctly but does not run in parallel; for parallel throughput, see
+[Recommended deploy patterns](#recommended-deploy-patterns). The
+public API surface is locked under SemVer — see
+[Versioning and breaking-change policy](#versioning-and-breaking-change-policy).
+To report a security issue, see [SECURITY.md](./SECURITY.md).
 
 ## Goals
 
@@ -240,21 +243,145 @@ runtimes.
   unblocks your JS code; it does not release the native CPU/memory until
   the run finishes.
 
+## Recommended deploy patterns
+
+The native addon has two unavoidable constraints that callers must work
+around when running it in production:
+
+1. `AbortSignal` is a **soft cancel** — it unblocks the awaiting JS
+   code but leaves the native worker thread running.
+2. Every call into the native side is **serialized by a process-global
+   mutex** because `igraph`'s error layer is not thread-safe.
+
+If your workload hits either constraint, pick the deploy pattern below
+that matches what you actually need.
+
+### Pattern A — single in-process worker
+
+For an event-loop-friendly server that handles **occasional** Leiden
+calls one at a time, just call `leidenAsync` directly. Use
+`AbortSignal.timeout()` to bound the wall-clock latency on your side;
+accept that the native run may still finish on its own. This is the
+right pattern when Leiden is a low-frequency operation on graphs small
+enough that "wasted CPU after abort" is acceptable.
+
+```ts
+import { leidenAsync } from "fast-leiden";
+
+await leidenAsync({
+  nodeCount,
+  sources,
+  targets,
+  signal: AbortSignal.timeout(5_000),
+});
+```
+
+### Pattern B — N `worker_threads` for parallel throughput
+
+If you need N concurrent Leiden runs from one process, spawn N
+`worker_threads`. Each worker loads its own copy of the addon, so the
+process-global mutex is **per-worker** and the runs proceed in
+parallel. The worker pool below is the minimum viable version.
+
+```ts
+// main.ts
+import { Worker } from "node:worker_threads";
+
+type Job = {
+  nodeCount: number;
+  sources: Uint32Array;
+  targets: Uint32Array;
+  seed?: number;
+};
+
+const runOnWorker = (job: Job) =>
+  new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./leiden-worker.js", import.meta.url));
+    worker.once("message", resolve);
+    worker.once("error", reject);
+    // Move the TypedArrays so we don't pay a structured-clone copy.
+    worker.postMessage(job, [job.sources.buffer, job.targets.buffer]);
+  });
+
+const results = await Promise.all([runOnWorker(j1), runOnWorker(j2), runOnWorker(j3)]);
+```
+
+```ts
+// leiden-worker.ts
+import { parentPort } from "node:worker_threads";
+import { leidenAsync } from "fast-leiden";
+
+parentPort?.on("message", async (job) => {
+  const result = await leidenAsync(job);
+  parentPort?.postMessage(result, [result.membership.buffer]);
+});
+```
+
+### Pattern C — `worker_threads` with hard deadline
+
+When you need a real CPU-and-memory deadline (not just "your code
+unblocks"), wrap the call in a worker you can `terminate()`. The
+`terminate()` call frees the native thread's CPU and memory; this is
+the only mechanism today that releases the worker immediately on
+abort. Same `leiden-worker.ts` as above.
+
+```ts
+import { Worker } from "node:worker_threads";
+
+const runWithHardDeadline = (job, deadlineMs) =>
+  new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./leiden-worker.js", import.meta.url));
+    const timer = setTimeout(() => {
+      worker.terminate();
+      reject(new Error("hard deadline exceeded"));
+    }, deadlineMs);
+    worker.once("message", (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+    worker.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    worker.postMessage(job, [job.sources.buffer, job.targets.buffer]);
+  });
+```
+
+### Pattern D — child process pool for high-throughput services
+
+For services that need to push tens of concurrent Leiden runs per
+second, child processes scale further than `worker_threads` (more
+isolation from V8's heap, easier OS-level resource limits). Use
+[`piscina`](https://github.com/piscinajs/piscina) or write a thin
+fork/IPC pool around `leiden-worker.ts`. Same caveats: each child
+loads its own addon copy, so the mutex is per-child.
+
+### Sizing rules of thumb
+
+- **One worker per logical CPU core.** Leiden is CPU-bound. Going
+  above that thrashes the OS scheduler without speeding anything up.
+- **Pre-allocate the pool.** Spawning a `worker_threads` worker
+  costs ~30 ms (V8 init + addon load). For latency-sensitive
+  endpoints, warm the pool at boot.
+- **Bound input size at the edge.** The library does not stream;
+  the whole graph must fit in memory and the optimiser is `O(E · k)`
+  where `k` is the number of outer iterations. A 100 M edge graph
+  will OOM a typical 4 GB serverless function.
+- **Set `signal: AbortSignal.timeout(...)` even with Pattern B.**
+  Soft-cancel still bounds how long your JS code waits even when
+  it can't bound the worker's CPU.
+
 ## Install
 
-> Not yet published. The package will be available as `fast-leiden` on npm once
-> the initial release is cut.
-
 ```bash
-# Once published
 npm install fast-leiden
 # or
 pnpm add fast-leiden
 ```
 
-On the prebuild matrix (`linux-x64`, `darwin-arm64`, `darwin-x64`,
-`win32-x64`) install is a binary drop — no CMake, no C++ toolchain, no
-Python.
+On the [Tier 1 platforms](#supported-platforms) (`linux-x64` glibc/musl,
+`linux-arm64` glibc/musl, `darwin-arm64`, `darwin-x64`, `win32-x64`)
+install is a binary drop — no CMake, no C++ toolchain, no Python.
 
 ### Install model
 
@@ -342,6 +469,48 @@ further setup, and `pnpm bench` finds Python's leidenalg out of the box.
 
 ## Supported platforms
 
+### Support tiers
+
+We commit to three levels of support. Pick the tier that matches your
+deployment target before adopting:
+
+**Tier 1 — fully supported.** Prebuilt binaries shipped on every release,
+exercised by the full CI matrix (source build + sanitizers + tarball
+install) on every commit. A regression on any Tier 1 target blocks a
+release.
+
+- `linux-x64` (glibc and musl)
+- `linux-arm64` (glibc and musl)
+- `darwin-arm64` (Apple Silicon)
+- `darwin-x64` (Intel Mac)
+- `win32-x64`
+- Node.js 22 / 24 / 26 (`engines.node` is `>=22`)
+
+**Tier 2 — best-effort, source build.** No prebuilt binary; the install
+hook falls through to building from source via CMake + node-gyp +
+Python 3. We accept bug reports and will land fixes, but we don't gate
+releases on it. If a Tier 2 target stops building, we ship anyway and
+fix it in a follow-up patch release.
+
+- Node.js 20 and older 22.x point releases (`engines.node` is advisory;
+  the addon is N-API so it _usually_ loads, but we don't run CI on it).
+- Linux distributions outside the libc set above (uClibc, etc.).
+- Linux on architectures other than x64 / arm64 (riscv64, ppc64le, …).
+
+**Not supported.** No prebuild, no CI, and we do not accept bug reports
+beyond "would be nice to add" feature requests. If you ship on one of
+these and need help, open an issue describing the runner and toolchain
+you use; we'd rather add the target than tell you to ship without a
+prebuild.
+
+- `win32-arm64`. GitHub Actions doesn't ship a free ARM Windows runner;
+  this would need a self-hosted runner or a cross-compile path.
+- FreeBSD and other BSDs.
+- Cross-compilation targets that aren't on the Tier 1 matrix above
+  (e.g., building `darwin-x64` from `linux-arm64`).
+
+### CI matrices
+
 Two matrices live next to each other in CI; both have to be green for a
 release to ship.
 
@@ -380,16 +549,8 @@ tag prebuildify appends (`.glibc.node` vs `.musl.node`), and
 node-gyp-build picks the right one at runtime by sniffing the consumer's
 libc.
 
-Not on the matrix today — these fall through to the source-build install
-path and need CMake + a C++17 toolchain + Python at install time:
-
-- **Windows arm64.** GitHub Actions doesn't ship a free ARM Windows
-  runner; would need a self-hosted runner or cross-compile.
-- **FreeBSD, other BSDs.**
-
-If you depend on one of these, please open an issue with the runner and
-toolchain version you use; we'd rather add the target than tell you to
-ship without a prebuild.
+Anything outside the matrix above is **Tier 2 (source build) or
+unsupported** — see [Support tiers](#support-tiers) above.
 
 ### Node-API compatibility policy
 
@@ -460,10 +621,17 @@ fast-leiden/
     igraph/             git submodule — igraph C library
     libleidenalg/       git submodule — libleidenalg C++ core
   prebuilds/            (generated) per-platform .node binaries
-  test/                 Vitest test suite (incl. fast-check properties)
-  bench/                Micro-benchmarks
+  test/
+    *.test.ts           Vitest test suite (incl. fast-check properties)
+    *.fuzz.ts           Long-running property fuzz (nightly only)
+  bench/
+    basic.ts            Synthetic SBM benchmark (incl. Python compare)
+    perf-gate.ts        Per-PR perf regression gate (small graph)
+    soak.ts             Weekly large-graph soak driver
   binding.gyp           node-gyp build descriptor
   tsconfig.json         TypeScript config (NodeNext / ESM)
+  vitest.config.ts      Test runner config (coverage gate lives here)
+  vitest.fuzz.config.ts Fuzz runner config (test/**/*.fuzz.ts)
 ```
 
 ## Known limitations
@@ -481,25 +649,29 @@ fast-leiden/
   `leidenFromCsrAsync` accept an `AbortSignal`; on abort the returned
   Promise rejects with `signal.reason` immediately, but **the native
   worker thread keeps running until it completes**. CPU and memory are
-  not released early. Wasted compute is bounded by the size of the graph
-  you queued; for very large graphs that can be tens of seconds. If you
-  need a real deadline, run the caller in a `worker_threads` worker or
-  child process you can terminate. Native cooperative cancellation
-  (propagating into libleidenalg via igraph's interruption handler) is
-  on the roadmap.
+  not released early. This is upstream-bounded — neither `igraph`'s
+  error layer nor `libleidenalg`'s `optimise_partition` polls for
+  cancellation during the inner loop — so it is a permanent contract
+  for 1.x; see
+  [Versioning and breaking-change policy](#versioning-and-breaking-change-policy).
+  For a real CPU/memory deadline use Pattern C in
+  [Recommended deploy patterns](#recommended-deploy-patterns).
 - **No true parallelism inside one process.** Every call into the native
   side is serialized by a process-global mutex because `igraph`'s
   error-handling layer is not thread-safe. `leidenAsync` still gets you
   off the event loop, but `Promise.all([leidenAsync(...), leidenAsync(...)])`
   runs the two calls one after the other on the worker pool. For real
-  parallel throughput, spawn multiple `worker_threads` or processes.
+  parallel throughput, see Pattern B in
+  [Recommended deploy patterns](#recommended-deploy-patterns). This
+  constraint is part of the 1.x contract.
 - **Community ids are not stable** across runs, seeds, or `libleidenalg`
   versions — only the partition (equivalence classes) is meaningful.
 - **No streaming / chunked input.** The whole graph must fit in memory.
-- **Performance regression and large-graph soak tests are not yet part of
-  CI.** Property-based fuzzing of the validator boundary runs in CI via
-  `fast-check`. If you have a representative large graph you can share for
-  perf testing, please open an issue.
+- **Large-graph soak runs weekly, not per-PR.** Every PR runs a
+  lightweight perf gate (`bench/perf-gate.ts`, ~5K nodes / ~30K edges)
+  so catastrophic regressions trip CI immediately; the larger soak
+  graphs (`bench/soak.ts`, ~50K nodes / 1–2M edges) run on the weekly
+  schedule defined in [`.github/workflows/soak.yml`](./.github/workflows/soak.yml).
 
 ## Troubleshooting
 
@@ -555,11 +727,98 @@ _Auto-updated by_ `.github/workflows/vendor-update.yml` _on the daily schedule._
 
 ## Versioning and breaking-change policy
 
-Pre-1.0. We follow Semantic Versioning with the standard pre-1.0 caveat:
-**breaking changes can land in any minor (`0.Y.0`) release**, but every
-breaking change is called out in [`CHANGELOG.md`](./CHANGELOG.md) with the
-migration. Patch (`0.0.Z`) releases are non-breaking. Once we cut 1.0, the
-public API documented in this README becomes the SemVer surface.
+`fast-leiden` follows Semantic Versioning from `1.0.0` onwards. The
+public API surface defined below is the SemVer contract: anything
+inside it stays compatible within a major; anything outside it can
+change in any release.
+
+- **Patch (`X.Y.Z`)**: bug fixes and submodule bumps that do not change
+  the deterministic partition for a given input + seed +
+  `libleidenalg` version.
+- **Minor (`X.Y.0`)**: additive changes (new exported function, new
+  option field, expanded prebuild matrix). Submodule bumps that
+  observably change the partition output but do not change the public
+  API shape also land in minors and are called out in
+  [`CHANGELOG.md`](./CHANGELOG.md).
+- **Major (`X.0.0`)**: removing or renaming a public export, changing
+  the type of an option, narrowing accepted input shapes, dropping a
+  Tier 1 platform, or any other source-breaking change.
+
+The 1.0 release locks the following behaviours into the SemVer contract:
+
+- **`AbortSignal` is a soft cancel for the lifetime of 1.x.** It
+  unblocks the awaiting JS code immediately; it does **not** stop the
+  native worker thread. This is upstream-bounded — neither `igraph`'s
+  interruption protocol nor `libleidenalg`'s optimiser polls for
+  cancellation during `optimise_partition`, so a real CPU/memory
+  deadline requires process isolation (see
+  [Recommended deploy patterns](#recommended-deploy-patterns)). If
+  upstream adds cooperative cancellation, we will add a hard-cancel
+  opt-in in a **minor** release; the soft-cancel contract still
+  remains the default through 1.x for backwards compatibility.
+- **Process-global serialization is permanent for 1.x.** Every call
+  into the native side (sync or async) is serialized by a
+  process-global mutex because `igraph`'s error layer is not
+  thread-safe. Parallel throughput requires multiple processes or
+  multiple `worker_threads` (each loads its own addon copy). We do
+  not plan to relax this within 1.x; if we ever do, it will be a
+  minor (additive) release that keeps the current single-instance
+  behaviour as the default.
+
+### Public API surface (the SemVer contract)
+
+For the purposes of SemVer, the **public API surface** is exactly:
+
+- The five named exports from the package root: `leiden`,
+  `leidenFromCsr`, `leidenAsync`, `leidenFromCsrAsync`, `version`.
+- The types in [`src/types.ts`](./src/types.ts) re-exported from
+  `src/index.ts` (`LeidenInput`, `LeidenCsrInput`, `LeidenOptions`,
+  `LeidenQualityFunction`, `LeidenResult`).
+- The behaviour documented in [API contract](#api-contract),
+  [Async semantics](#async-semantics), and [Output shape](#output-shape).
+
+The following are **not** part of the public API and may change in any
+release without a major bump:
+
+- `dist/native.js` and anything under `dist/` except `dist/index.{js,d.ts}`.
+  Deep imports are blocked by the `"exports"` field in `package.json`.
+- The C++ ABI of the bundled `.node` files. These are an internal
+  implementation detail; consumers should never `dlopen` them directly.
+- The format of `prebuilds/` filenames and the `node-gyp-build` lookup
+  protocol; these can change as long as the public `import` keeps
+  working on the supported platforms.
+- The CLI surface of `scripts/*.mjs`. Build scripts are not a contract.
+- The output of `pnpm bench` and `pnpm soak` (formats, columns, file
+  layout); they're for our CI, not for downstream tooling.
+- The exact community ids in `membership` — only the partition (the
+  equivalence classes) is part of the contract.
+
+### Public API surface (the SemVer contract)
+
+For the purposes of SemVer, the **public API surface** is exactly:
+
+- The five named exports listed above.
+- The types in [`src/types.ts`](./src/types.ts) re-exported from
+  `src/index.ts` (`LeidenInput`, `LeidenCsrInput`, `LeidenOptions`,
+  `LeidenQualityFunction`, `LeidenResult`).
+- The behaviour documented in [API contract](#api-contract),
+  [Async semantics](#async-semantics), and [Output shape](#output-shape).
+
+The following are **not** part of the public API and may change in any
+release without a major bump:
+
+- `dist/native.js` and anything under `dist/` except `dist/index.{js,d.ts}`.
+  Deep imports are blocked by the `"exports"` field in `package.json`.
+- The C++ ABI of the bundled `.node` files. These are an internal
+  implementation detail; consumers should never `dlopen` them directly.
+- The format of `prebuilds/` filenames and the `node-gyp-build` lookup
+  protocol; these can change as long as the public `import` keeps
+  working on the supported platforms.
+- The CLI surface of `scripts/*.mjs`. Build scripts are not a contract.
+- The output of `pnpm bench` and `pnpm soak` (formats, columns, file
+  layout); they're for our CI, not for downstream tooling.
+- The exact community ids in `membership` — only the partition (the
+  equivalence classes) is part of the contract.
 
 ## License
 

@@ -1,0 +1,72 @@
+name: Fuzz
+
+# Long-running property fuzz of the JS/C++ boundary.
+#
+# The fast-check properties in `test/fuzz.fuzz.ts` exercise the same
+# surface as `test/property.test.ts` but with far more runs (default
+# 5000 here vs. fast-check's default 100). Combined with ASan/UBSan
+# enabled in the build, this is the deepest signal we get on native
+# memory-safety regressions outside of an explicit fuzz harness.
+#
+# Runs:
+#   - Nightly cron at 03:00 UTC.
+#   - On demand via `workflow_dispatch` (use to validate a specific
+#     branch before merging a native-side change).
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "fast-check numRuns"
+        default: "5000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Fuzz (Node 24, ubuntu-latest, ASan + UBSan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Cache vendor build-deps (fuzz)
+        uses: actions/cache@v4
+        with:
+          path: vendor/build-deps
+          key: ${{ runner.os }}-build-deps-fuzz-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build vendor deps + native addon with ASan/UBSan
+        env:
+          CFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          CXXFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          LDFLAGS: "-fsanitize=address,undefined"
+        run: |
+          pnpm build:deps
+          pnpm build:native
+          pnpm build:ts
+
+      - name: Run fuzz suite
+        env:
+          LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libasan.so.8
+          ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1"
+          UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+          FAST_LEIDEN_FUZZ_RUNS: ${{ github.event.inputs.runs || '5000' }}
+        run: pnpm fuzz

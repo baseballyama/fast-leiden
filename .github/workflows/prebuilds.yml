@@ -44,6 +44,20 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # Windows runners don't ship bison / flex; see ci.yml for the full
+      # rationale.
+      - name: Install bison + flex (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install --no-progress -y winflexbison3
+          $tool = (Get-ChildItem -Path "$env:ChocolateyInstall\lib\winflexbison3\tools" -Filter "win_bison.exe" -Recurse | Select-Object -First 1).FullName
+          if (-not $tool) { throw "win_bison.exe not found after install" }
+          $dir = Split-Path $tool
+          echo "BISON_EXECUTABLE=$dir\win_bison.exe" >> $env:GITHUB_ENV
+          echo "FLEX_EXECUTABLE=$dir\win_flex.exe"  >> $env:GITHUB_ENV
+          echo "$dir" >> $env:GITHUB_PATH
+
       - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build prebuild

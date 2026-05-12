@@ -197,6 +197,20 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # Windows runners don't include bison / flex. See the matching
+      # step in ci.yml for the full rationale.
+      - name: Install bison + flex (Windows)
+        if: needs.check.outputs.hasChangesets == 'false' && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install --no-progress -y winflexbison3
+          $tool = (Get-ChildItem -Path "$env:ChocolateyInstall\lib\winflexbison3\tools" -Filter "win_bison.exe" -Recurse | Select-Object -First 1).FullName
+          if (-not $tool) { throw "win_bison.exe not found after install" }
+          $dir = Split-Path $tool
+          echo "BISON_EXECUTABLE=$dir\win_bison.exe" >> $env:GITHUB_ENV
+          echo "FLEX_EXECUTABLE=$dir\win_flex.exe"  >> $env:GITHUB_ENV
+          echo "$dir" >> $env:GITHUB_PATH
+
       - run: pnpm install --frozen-lockfile --ignore-scripts
         if: needs.check.outputs.hasChangesets == 'false'
 
@@ -322,6 +336,33 @@ jobs:
           pnpm pack --pack-destination /tmp
           ls -la /tmp/fast-leiden-*.tgz
           tar -tzf /tmp/fast-leiden-*.tgz | grep '^package/prebuilds/'
+
+      - name: Generate SBOM (CycloneDX)
+        if: needs.check.outputs.hasChangesets == 'false'
+        # Produces a CycloneDX 1.5 JSON for the production dependency tree.
+        # The SBOM is uploaded as a workflow artifact below; we also attach
+        # it to the GitHub Release via changesets/action's
+        # `createGithubReleases: true` (which keys off the version tag and
+        # picks up release assets in the runner workspace at publish time).
+        run: |
+          set -euo pipefail
+          npx --yes @cyclonedx/cyclonedx-npm@2 \
+            --omit dev \
+            --output-format JSON \
+            --output-file sbom.cdx.json
+          ls -la sbom.cdx.json
+          # Echo a short summary into the job log so reviewers can sanity
+          # check what landed in the SBOM without downloading the artifact.
+          node -e "const s=require('./sbom.cdx.json'); console.log('SBOM components:', (s.components||[]).length, 'serial:', s.serialNumber);"
+
+      - name: Upload SBOM artifact
+        if: needs.check.outputs.hasChangesets == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cdx
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 365
 
       - name: Publish via changesets
         if: needs.check.outputs.hasChangesets == 'false'

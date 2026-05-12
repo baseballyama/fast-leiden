@@ -34,6 +34,9 @@ pnpm-debug.log*
 bench/results/
 bench/.venv/
 
+# Coverage output (vitest --coverage)
+coverage/
+
 # CMake-built deps
 vendor/build-deps/
 

@@ -23,5 +23,24 @@ export default defineConfig({
       // Keep file order deterministic so test logs match git diff order.
       shuffle: false,
     },
+    // Coverage gate. The TypeScript wrapper layer is small and almost all
+    // of it is reachable from the public API, so we hold it to a high bar.
+    // `native/binding.cc` is excluded — V8 coverage only sees JS; the C++
+    // boundary is exercised by the test suite (incl. ASan/UBSan) and the
+    // fast-check property fuzz, not by a line-coverage tool.
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "text-summary", "lcov"],
+      include: ["src/**/*.ts"],
+      // types.ts is pure type declarations — V8 coverage reports it as
+      // 100% empty, which skews the file count without telling us anything.
+      exclude: ["src/types.ts"],
+      thresholds: {
+        lines: 85,
+        statements: 85,
+        functions: 90,
+        branches: 80,
+      },
+    },
   },
 });
