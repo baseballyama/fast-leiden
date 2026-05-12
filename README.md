@@ -389,16 +389,16 @@ drop — no CMake, no C++ toolchain, no Python. `darwin-x64` (Intel Mac) is
 The npm tarball ships **prebuilt binaries via [`prebuildify`](https://github.com/prebuild/prebuildify)**
 for the platforms in our release matrix:
 
-| Platform        | libc  | Status                                     |
-| --------------- | ----- | ------------------------------------------ |
-| `linux-x64`     | glibc | ✅ prebuilt                                |
-| `linux-x64`     | musl  | ✅ prebuilt (Alpine / distroless musl)     |
-| `linux-arm64`   | glibc | ✅ prebuilt (AWS Graviton, ARM servers)    |
-| `linux-arm64`   | musl  | ✅ prebuilt (Alpine on ARM)                |
-| `darwin-arm64`  | —     | ✅ prebuilt (Apple Silicon)                |
-| `darwin-x64`    | —     | ⚠️ source build only (Intel Mac, Tier 2)   |
-| `win32-x64`     | —     | ✅ prebuilt                                |
-| `win32-arm64`,… |       | ❌ not yet — file an issue if you need one |
+| Platform        | libc  | Status                                                  |
+| --------------- | ----- | ------------------------------------------------------- |
+| `linux-x64`     | glibc | ✅ prebuilt                                             |
+| `linux-x64`     | musl  | ✅ prebuilt (Alpine / distroless musl)                  |
+| `linux-arm64`   | glibc | ✅ prebuilt (AWS Graviton, ARM servers)                 |
+| `linux-arm64`   | musl  | ✅ prebuilt (Alpine on ARM, via dockerized cross-build) |
+| `darwin-arm64`  | —     | ✅ prebuilt (Apple Silicon)                             |
+| `darwin-x64`    | —     | ⚠️ source build only (Intel Mac, Tier 2)                |
+| `win32-x64`     | —     | ✅ prebuilt                                             |
+| `win32-arm64`,… |       | ❌ not yet — file an issue if you need one              |
 
 `scripts/install.mjs` runs as the `install` lifecycle script. It looks for a
 prebuild matching the current `<platform>-<arch>` via
@@ -481,7 +481,9 @@ install) on every commit. A regression on any Tier 1 target blocks a
 release.
 
 - `linux-x64` (glibc and musl)
-- `linux-arm64` (glibc and musl)
+- `linux-arm64` (glibc and musl — musl is built via a dockerized
+  workaround for GitHub Actions' Alpine + arm64 JS-Actions limit, see
+  `release.yml`)
 - `darwin-arm64` (Apple Silicon)
 - `win32-x64`
 - Node.js 22 / 24 / 26 (`engines.node` is `>=22`)
@@ -543,7 +545,7 @@ refuses to publish unless every artifact produced a `*.node`:
 | `linux-x64-glibc`   | `ubuntu-latest`    | —                | `glibc`  |
 | `linux-x64-musl`    | `ubuntu-latest`    | `node:22-alpine` | `musl`   |
 | `linux-arm64-glibc` | `ubuntu-24.04-arm` | —                | `glibc`  |
-| `linux-arm64-musl`  | `ubuntu-24.04-arm` | `node:22-alpine` | `musl`   |
+| `linux-arm64-musl`  | `ubuntu-24.04-arm` | docker / Alpine  | `musl`   |
 | `darwin-arm64`      | `macos-latest`     | —                | —        |
 | `win32-x64`         | `windows-latest`   | —                | —        |
 

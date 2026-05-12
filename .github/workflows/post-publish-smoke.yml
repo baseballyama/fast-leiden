@@ -57,10 +57,16 @@ jobs:
             os: ubuntu-24.04-arm
             container: ""
             node: "22"
+          # linux-arm64-musl: GitHub Actions can't run JS actions in an
+          # Alpine container on arm64 (see release.yml). We work around
+          # it by staying on the glibc arm64 host and doing both the
+          # `npm install` and the smoke test inside a `docker run
+          # node:22-alpine`. The dockerized_musl flag selects that path.
           - target: linux-arm64-musl
             os: ubuntu-24.04-arm
-            container: node:22-alpine
+            container: ""
             node: "22"
+            dockerized_musl: true
           - target: darwin-arm64
             os: macos-latest
             container: ""
@@ -81,7 +87,9 @@ jobs:
       - name: Set up Node.js
         # Skip on Alpine — the container already provides Node 22. The
         # actions/setup-node action requires glibc and fails on musl.
-        if: matrix.container == ''
+        # Also skip for the dockerized arm64-musl path; that one runs
+        # entirely inside `docker run node:22-alpine` further down.
+        if: matrix.container == '' && !matrix.dockerized_musl
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
@@ -104,6 +112,7 @@ jobs:
           echo "Resolved target version: ${version}"
 
       - name: Create consumer project
+        if: ${{ !matrix.dockerized_musl }}
         shell: bash
         run: |
           mkdir -p consumer && cd consumer
@@ -115,6 +124,7 @@ jobs:
           npm install --foreground-scripts "fast-leiden@${{ steps.ver.outputs.version }}"
 
       - name: Smoke test
+        if: ${{ !matrix.dockerized_musl }}
         shell: bash
         run: |
           cd consumer
@@ -148,6 +158,7 @@ jobs:
           node smoke.mjs
 
       - name: Confirm prebuild path (no source build)
+        if: ${{ !matrix.dockerized_musl }}
         # If the consumer fell through to a source build, the
         # `build/Release/` directory would exist. Treat that as a
         # release-engineering bug — registry users shouldn't need a
@@ -160,3 +171,59 @@ jobs:
             exit 1
           fi
           echo "OK: prebuild path used"
+
+      # linux-arm64-musl: do install + smoke + prebuild-path check all
+      # in one `docker run node:22-alpine`. The host is glibc arm64
+      # Ubuntu, so we couldn't use a job-level Alpine container (see
+      # release.yml for the JS-Actions-in-Alpine-arm64 limitation).
+      - name: Smoke (linux-arm64-musl via docker)
+        if: ${{ matrix.dockerized_musl }}
+        shell: bash
+        env:
+          TARGET_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            -e TARGET_VERSION="$TARGET_VERSION" \
+            node:22-alpine sh -c '
+              set -e
+              apk add --no-cache bash curl
+              mkdir -p consumer && cd consumer
+              npm init -y >/dev/null
+              npm install --foreground-scripts "fast-leiden@${TARGET_VERSION}"
+              cat > smoke.mjs <<EOF
+              import { leiden, leidenAsync, version } from "fast-leiden";
+              const v = version();
+              if (typeof v !== "string" || !/^\d+\.\d+\.\d+/.test(v)) {
+                console.error("unexpected version:", v);
+                process.exit(1);
+              }
+              const input = {
+                nodeCount: 6,
+                sources: new Uint32Array([0, 1, 0, 3, 4, 3, 2]),
+                targets: new Uint32Array([1, 2, 2, 4, 5, 5, 5]),
+                seed: 42,
+              };
+              const sync = leiden(input);
+              if (sync.membership.length !== 6) process.exit(2);
+              if (sync.membership[0] === sync.membership[3]) {
+                console.error("two triangles collapsed under sync run");
+                process.exit(3);
+              }
+              const asyncRes = await leidenAsync(input);
+              if (asyncRes.membership.length !== 6) process.exit(4);
+              if (asyncRes.membership[0] === asyncRes.membership[3]) {
+                console.error("two triangles collapsed under async run");
+                process.exit(5);
+              }
+              console.log("registry smoke OK; version=" + v);
+              EOF
+              node smoke.mjs
+              if [ -d node_modules/fast-leiden/build/Release ]; then
+                echo "ERROR: source build was triggered on linux-arm64-musl"
+                exit 1
+              fi
+              echo "OK: prebuild path used"
+            '

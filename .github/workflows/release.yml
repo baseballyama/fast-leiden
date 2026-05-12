@@ -142,11 +142,25 @@ jobs:
             container: ""
             target: linux-arm64
             libc: glibc
+          # linux-arm64-musl: GitHub Actions doesn't support
+          # JavaScript-based actions (actions/checkout, …) inside
+          # Alpine containers on arm64 runners — the embedded Node in
+          # those actions is x64-musl only, so a job-level
+          # `container: node:22-alpine` on `ubuntu-24.04-arm` dies at
+          # actions/checkout with "JavaScript Actions in Alpine
+          # containers are only supported on x64 Linux runners".
+          # Workaround: keep the job on the glibc arm64 host so
+          # actions/checkout runs natively, and execute the build
+          # itself inside a `docker run node:22-alpine` invocation
+          # mounted onto the workspace. Output lands in
+          # `prebuilds/linux-arm64/*.musl.node` on the host so
+          # `actions/upload-artifact` picks it up unchanged.
           - artifact: linux-arm64-musl
             os: ubuntu-24.04-arm
-            container: node:22-alpine
+            container: ""
             target: linux-arm64
             libc: musl
+            dockerized_musl: true
           - artifact: darwin-arm64
             os: macos-latest
             container: ""
@@ -174,13 +188,16 @@ jobs:
           echo "No prebuild for ${{ matrix.artifact }} on this push."
 
       # Alpine doesn't ship the build toolchain prebuildify needs. Install
-      # them before the rest of the actions run — pnpm/action-setup pulls
-      # in via curl which also needs the package manager seeded. `bison` +
+      # it before the rest of the actions run — pnpm/action-setup pulls
+      # via curl which also needs the package manager seeded. `bison` +
       # `flex` are required because igraph's `src/CMakeLists.txt` invokes
-      # `bison_target()` / `flex_target()` unconditionally (same reason as
-      # Windows, see the matching choco step further down).
+      # `bison_target()` / `flex_target()` unconditionally (same reason
+      # as Windows, see the matching choco step further down). Only fires
+      # for the job-level-container Alpine rows (linux-x64-musl); the
+      # arm64-musl row runs on the glibc host and does its apk add inside
+      # the `docker run` step further down.
       - name: Install Alpine build deps
-        if: needs.check.outputs.hasChangesets == 'false' && matrix.libc == 'musl'
+        if: needs.check.outputs.hasChangesets == 'false' && matrix.libc == 'musl' && !matrix.dockerized_musl
         shell: sh
         run: |
           apk add --no-cache \
@@ -200,10 +217,10 @@ jobs:
           submodules: recursive
 
       - uses: pnpm/action-setup@v6
-        if: needs.check.outputs.hasChangesets == 'false'
+        if: needs.check.outputs.hasChangesets == 'false' && !matrix.dockerized_musl
 
       - uses: actions/setup-node@v6
-        if: needs.check.outputs.hasChangesets == 'false'
+        if: needs.check.outputs.hasChangesets == 'false' && !matrix.dockerized_musl
         with:
           node-version: 22
           cache: pnpm
@@ -223,16 +240,52 @@ jobs:
           echo "$dir" >> $env:GITHUB_PATH
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
-        if: needs.check.outputs.hasChangesets == 'false'
+        if: needs.check.outputs.hasChangesets == 'false' && !matrix.dockerized_musl
 
       - name: Build prebuild
-        if: needs.check.outputs.hasChangesets == 'false'
+        if: needs.check.outputs.hasChangesets == 'false' && !matrix.dockerized_musl
         env:
           # When this is a libc-tagged build, point prebuildify at it so
           # the artifact file lands as `<name>.<libc>.node` and
           # node-gyp-build can pick the right one at runtime.
           PREBUILDIFY_LIBC: ${{ matrix.libc }}
         run: pnpm run prebuild
+
+      # linux-arm64-musl: host is glibc arm64 Ubuntu (so checkout etc.
+      # work), but the build needs to produce an arm64-musl `.node`.
+      # `node:22-alpine` is a multi-arch manifest; on an arm64 host
+      # Docker pulls the arm64 variant automatically, so the resulting
+      # binary is arm64-musl. We do the full pnpm install + prebuild
+      # inside the container so every native dep (node-gyp, prebuildify,
+      # the addon itself) is built against musl libc. Output lands in
+      # the host workspace via the volume mount and the regular
+      # `Upload prebuild artifact` step below picks it up.
+      - name: Build prebuild (Alpine arm64 via docker)
+        if: needs.check.outputs.hasChangesets == 'false' && matrix.dockerized_musl
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            -e PREBUILDIFY_LIBC=musl \
+            node:22-alpine sh -c '
+              set -e
+              apk add --no-cache bash bison build-base cmake flex git linux-headers python3 curl
+              # Trust the workspace path even though uid mapping differs
+              # between host and container (root inside vs runner user
+              # outside) — without this, the `git describe --tags` calls
+              # in build-deps.mjs trip "detected dubious ownership".
+              git config --global --add safe.directory /workspace
+              git config --global --add safe.directory /workspace/vendor/igraph
+              git config --global --add safe.directory /workspace/vendor/libleidenalg
+              npm install -g pnpm@9.15.9
+              pnpm install --frozen-lockfile --ignore-scripts
+              pnpm run prebuild
+              # Make the output readable by the runner user on the host
+              # (apk add ran as root, files would otherwise be 0644 root).
+              chmod -R a+r prebuilds || true
+            '
 
       - name: Upload prebuild artifact
         if: needs.check.outputs.hasChangesets == 'false'
