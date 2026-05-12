@@ -14,9 +14,11 @@ JS allocations, no JSON / IPC serialization).
 ## Status
 
 Pre-1.0. Working end-to-end on macOS, Linux, and Windows in CI (Node 22 / 24 /
-26). Modularity and CPM quality functions are supported. Both edge-list and
-CSR input paths are implemented. See [Supported platforms](#supported-platforms)
-and [Known limitations](#known-limitations) before adopting in production.
+26). Shipped as an **ES module** with `"type": "module"`. Modularity and CPM
+quality functions are supported. Both edge-list and CSR input paths are
+implemented. Prebuilt binaries for the major platforms; async runs support
+`AbortSignal`. See [Supported platforms](#supported-platforms) and
+[Known limitations](#known-limitations) before adopting in production.
 
 ## Goals
 
@@ -213,6 +215,17 @@ runtimes.
 > Not yet published. The package will be available as `fast-leiden` on npm once
 > the initial release is cut.
 
+```bash
+# Once published
+npm install fast-leiden
+# or
+pnpm add fast-leiden
+```
+
+On the prebuild matrix (`linux-x64`, `darwin-arm64`, `darwin-x64`,
+`win32-x64`) install is a binary drop — no CMake, no C++ toolchain, no
+Python.
+
 ### Install model
 
 The npm tarball ships **prebuilt binaries via [`prebuildify`](https://github.com/prebuild/prebuildify)**
@@ -314,18 +327,28 @@ boundary. The `engines.node` constraint in `package.json` (`>=22`) reflects
 which Node majors are actively tested in CI, not a hard ABI requirement.
 Older Node majors will most likely load the addon but are not supported.
 
-### CJS / ESM
+### Module system: ESM-only
 
-The compiled output under `dist/` is **CommonJS** (the package has no
-`"type": "module"` field). Both styles work for consumers:
+`fast-leiden` is shipped as an **ES module**. `package.json` has
+`"type": "module"` and the `"exports"` map exposes a single `import`
+condition, so `require("fast-leiden")` from a plain CommonJS file will
+fail with `ERR_REQUIRE_ESM` on older Nodes. On Node 22+ — which this
+package's `engines.node` already requires — CommonJS callers can use
+either of:
 
 ```ts
-// TypeScript or ESM Node — works via default-export interop
-import { leiden } from "fast-leiden";
+// 1. Top-level ESM (recommended)
+import { leiden, leidenAsync } from "fast-leiden";
 ```
 
 ```js
-// CommonJS Node
+// 2. Dynamic import from CJS (works everywhere)
+const { leiden } = await import("fast-leiden");
+```
+
+```js
+// 3. Synchronous require-of-ESM from CJS (Node 22+ behind
+//    --experimental-require-module; on by default in Node 24+)
 const { leiden } = require("fast-leiden");
 ```
 
@@ -354,17 +377,22 @@ pnpm bench
 
 ```
 fast-leiden/
-  src/                  TypeScript source — public API
+  src/                  TypeScript source — public API (ESM)
   native/               C++ N-API binding source
   scripts/
+    install.mjs         install hook: prefer prebuild, fall back to source
+    prebuild.mjs        run prebuildify --napi --strip for the host
     build-deps.mjs      Cross-platform CMake driver for igraph + libleidenalg
+    write-version-header.mjs   generate native/version_generated.h
+    clean.mjs           remove dist / build / prebuilds / vendor/build-deps
   vendor/
     igraph/             git submodule — igraph C library
     libleidenalg/       git submodule — libleidenalg C++ core
-  test/                 Vitest test suite
+  prebuilds/            (generated) per-platform .node binaries
+  test/                 Vitest test suite (incl. fast-check properties)
   bench/                Micro-benchmarks
   binding.gyp           node-gyp build descriptor
-  tsconfig.json         TypeScript config
+  tsconfig.json         TypeScript config (NodeNext / ESM)
 ```
 
 ## Known limitations
@@ -406,9 +434,14 @@ fast-leiden/
   `scripts/build-deps.mjs` you should also bump
   `MACOSX_DEPLOYMENT_TARGET` in `binding.gyp`, then rebuild.
 - **`pnpm install` fails on a CI / serverless image without CMake or
-  Python** — there are no prebuilt binaries yet; either provision the
-  toolchain or wait for the `prebuild`-based release. Track the roadmap in
-  [Install model and roadmap](#install-model-and-roadmap).
+  Python** — your platform isn't on the [prebuild matrix](#install-model).
+  Either provision a C++17 toolchain + Python + CMake on the image, or
+  install on a supported platform and copy `node_modules/fast-leiden/` over.
+- **`ERR_REQUIRE_ESM` when requiring `fast-leiden`** — the package is
+  ESM-only. Use `import { leiden } from "fast-leiden"` from an ES module,
+  `const { leiden } = await import("fast-leiden")` from CommonJS, or run
+  on Node 24+ where synchronous `require()` of ESM works without a flag.
+  See [Module system: ESM-only](#module-system-esm-only).
 
 ## Submodule update policy
 

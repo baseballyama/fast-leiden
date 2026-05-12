@@ -14,7 +14,10 @@ export type {
 // source. The native side reads the same value via a generated header
 // (scripts/write-version-header.mjs), so both layers share package.json as the
 // single source of truth.
-const pkg = createRequire(__filename)("../package.json") as { version: string };
+// We use createRequire here rather than `import ... assert { type: "json" }`
+// so this file stays compatible with Node 22 (where JSON modules are still
+// experimental in some forms).
+const pkg = createRequire(import.meta.url)("../package.json") as { version: string };
 
 /** Package version. Matches `package.json` exactly. */
 export const version = (): string => pkg.version;

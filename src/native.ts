@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // We hand the project root to `node-gyp-build`, which is the canonical
 // resolver for native addons: it picks up a platform-specific prebuilt
@@ -7,8 +8,12 @@ import { dirname, resolve } from "node:path";
 // tarball, and otherwise falls back to the source build under
 // `build/Release/`. This keeps the require path stable across publish
 // modes (prebuild vs. source) and across bundlers.
-const requireFromHere = createRequire(__filename);
-const projectRoot = resolve(dirname(__filename), "..");
+//
+// `node-gyp-build` is a CommonJS module, so we pull it in via createRequire
+// from this ESM module. `import.meta.url` resolves relative to the compiled
+// `dist/native.js` at runtime.
+const requireFromHere = createRequire(import.meta.url);
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface NativeLeidenInput {
   nodeCount: number;
