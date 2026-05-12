@@ -1,13 +1,17 @@
 // fast-leiden — native binding.
 //
-// Exposes three N-API functions:
+// Exposes five N-API functions:
 //
-//   - version():              addon version string (smoke test)
-//   - leidenFromEdgeList():   run Leiden given source/target arrays
-//   - leidenFromCsr():        run Leiden given a CSR-encoded graph
+//   - version():                  addon version string (smoke test)
+//   - leidenFromEdgeList():       sync edge-list entry point
+//   - leidenFromCsr():            sync CSR entry point
+//   - leidenFromEdgeListAsync():  same, but runs on a worker thread,
+//                                 returns a Promise
+//   - leidenFromCsrAsync():       same for CSR
 //
-// Both leiden* functions accept an options object on the JS side and return
-// an object { membership: Uint32Array, quality: number, iterations: number }.
+// All four leiden* functions accept the same options object on the JS side
+// and return (resolve to) { membership: Uint32Array, quality: number,
+// iterations: number }.
 
 #include <napi.h>
 
@@ -59,9 +63,17 @@ class IgraphVectorIntGuard {
 };
 
 // ---------------------------------------------------------------------------
-// Options shared by both entry points.
+// Owned representation of a Leiden call. Holds copies of all input arrays so
+// that worker threads can safely operate on them after the JS call returns.
 
-struct LeidenCallOptions {
+struct LeidenJob {
+  uint32_t node_count = 0;
+  std::vector<uint32_t> sources;
+  std::vector<uint32_t> targets;
+  std::vector<double> weights;
+  bool has_weights = false;
+
+  // Options.
   std::string quality_function = "modularity";
   double resolution = 1.0;
   int max_iterations = 10;
@@ -70,38 +82,14 @@ struct LeidenCallOptions {
   bool directed = false;
 };
 
-LeidenCallOptions ReadOptions(const Napi::Object& obj) {
-  // The TS wrapper passes every option key through, even when the caller
-  // left it undefined. Guarding on IsString/IsNumber/IsBoolean keeps the
-  // C++ side robust regardless of how the JS object was constructed.
-  LeidenCallOptions opts;
-  Napi::Value q = obj.Get("qualityFunction");
-  if (q.IsString()) {
-    opts.quality_function = q.As<Napi::String>().Utf8Value();
-  }
-  Napi::Value res = obj.Get("resolution");
-  if (res.IsNumber()) {
-    opts.resolution = res.As<Napi::Number>().DoubleValue();
-  }
-  Napi::Value mi = obj.Get("maxIterations");
-  if (mi.IsNumber()) {
-    opts.max_iterations = mi.As<Napi::Number>().Int32Value();
-  }
-  Napi::Value seed = obj.Get("seed");
-  if (seed.IsNumber()) {
-    opts.has_seed = true;
-    opts.seed = seed.As<Napi::Number>().Uint32Value();
-  }
-  Napi::Value dir = obj.Get("directed");
-  if (dir.IsBoolean()) {
-    opts.directed = dir.As<Napi::Boolean>().Value();
-  }
-  return opts;
-}
+struct LeidenResultC {
+  std::vector<size_t> membership;
+  double quality = 0.0;
+  int iterations = 0;
+};
 
 // ---------------------------------------------------------------------------
-// Build an `igraph_t` from raw edge arrays. Returns an owning IgraphGuard via
-// the out parameter `g`. The caller is responsible for the guard's lifetime.
+// Pure C++ work — no Napi access. Safe to call from a worker thread.
 
 void BuildIgraphFromEdges(igraph_t* g,
                           uint32_t node_count,
@@ -131,32 +119,19 @@ void BuildIgraphFromEdges(igraph_t* g,
   }
 }
 
-// ---------------------------------------------------------------------------
-// Run Leiden on a graph that has already been wrapped by the leidenalg
-// `Graph` helper. The partition is created based on `opts.quality_function`.
-// Returns membership, final quality, and the number of outer-loop iterations
-// the optimiser actually performed (it converges before max_iterations when
-// no further improvement is possible).
-
-struct LeidenResultC {
-  std::vector<size_t> membership;
-  double quality;
-  int iterations;
-};
-
-LeidenResultC RunLeiden(Graph& graph, const LeidenCallOptions& opts) {
+LeidenResultC RunLeidenOnGraph(Graph& graph, const LeidenJob& job) {
   std::unique_ptr<MutableVertexPartition> partition;
-  if (opts.quality_function == "modularity") {
+  if (job.quality_function == "modularity") {
     partition.reset(new ModularityVertexPartition(&graph));
-  } else if (opts.quality_function == "cpm") {
-    partition.reset(new CPMVertexPartition(&graph, opts.resolution));
+  } else if (job.quality_function == "cpm") {
+    partition.reset(new CPMVertexPartition(&graph, job.resolution));
   } else {
-    throw std::runtime_error("unknown qualityFunction: " + opts.quality_function);
+    throw std::runtime_error("unknown qualityFunction: " + job.quality_function);
   }
 
   Optimiser optimiser;
-  if (opts.has_seed) {
-    optimiser.set_rng_seed(static_cast<size_t>(opts.seed));
+  if (job.has_seed) {
+    optimiser.set_rng_seed(static_cast<size_t>(job.seed));
   }
 
   // The Leiden algorithm in libleidenalg is itself iterative inside one
@@ -164,7 +139,7 @@ LeidenResultC RunLeiden(Graph& graph, const LeidenCallOptions& opts) {
   // Python `n_iterations` parameter — re-running optimise_partition often
   // squeezes out another improvement, until it returns 0 (converged).
   int iterations_run = 0;
-  for (int i = 0; i < opts.max_iterations; ++i) {
+  for (int i = 0; i < job.max_iterations; ++i) {
     double improvement = optimiser.optimise_partition(partition.get());
     ++iterations_run;
     if (improvement <= 0.0) break;
@@ -175,6 +150,153 @@ LeidenResultC RunLeiden(Graph& graph, const LeidenCallOptions& opts) {
       partition->quality(),
       iterations_run,
   };
+}
+
+LeidenResultC RunLeidenJob(const LeidenJob& job) {
+  const size_t edge_count = job.sources.size();
+  igraph_t g;
+  BuildIgraphFromEdges(&g, job.node_count, job.sources.data(), job.targets.data(),
+                       edge_count, job.directed);
+  IgraphGuard g_guard(&g);
+
+  std::unique_ptr<Graph> graph(
+      job.has_weights ? Graph::GraphFromEdgeWeights(&g, job.weights) : new Graph(&g));
+  return RunLeidenOnGraph(*graph, job);
+}
+
+// ---------------------------------------------------------------------------
+// JS -> LeidenJob conversion. Validates and copies TypedArrays into vectors
+// owned by the job so we can hand them off to a worker thread safely.
+
+void ApplyOptions(Napi::Object& obj, LeidenJob& job) {
+  Napi::Value q = obj.Get("qualityFunction");
+  if (q.IsString()) {
+    job.quality_function = q.As<Napi::String>().Utf8Value();
+  }
+  Napi::Value res = obj.Get("resolution");
+  if (res.IsNumber()) {
+    job.resolution = res.As<Napi::Number>().DoubleValue();
+  }
+  Napi::Value mi = obj.Get("maxIterations");
+  if (mi.IsNumber()) {
+    job.max_iterations = mi.As<Napi::Number>().Int32Value();
+  }
+  Napi::Value seed = obj.Get("seed");
+  if (seed.IsNumber()) {
+    job.has_seed = true;
+    job.seed = seed.As<Napi::Number>().Uint32Value();
+  }
+  Napi::Value dir = obj.Get("directed");
+  if (dir.IsBoolean()) {
+    job.directed = dir.As<Napi::Boolean>().Value();
+  }
+}
+
+// Returns true on success, false on validation failure (in which case a JS
+// exception is already pending and the caller should return Undefined()).
+bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
+  if (!input.Get("nodeCount").IsNumber()) {
+    Napi::TypeError::New(env, "nodeCount must be a number").ThrowAsJavaScriptException();
+    return false;
+  }
+  job.node_count = input.Get("nodeCount").As<Napi::Number>().Uint32Value();
+
+  Napi::Value sv = input.Get("sources");
+  Napi::Value tv = input.Get("targets");
+  if (!sv.IsTypedArray() || !tv.IsTypedArray()) {
+    Napi::TypeError::New(env, "sources and targets must be Uint32Array")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  Napi::Uint32Array sources = sv.As<Napi::Uint32Array>();
+  Napi::Uint32Array targets = tv.As<Napi::Uint32Array>();
+  if (sources.ElementLength() != targets.ElementLength()) {
+    Napi::RangeError::New(env, "sources and targets must have equal length")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  const size_t edge_count = sources.ElementLength();
+  job.sources.assign(sources.Data(), sources.Data() + edge_count);
+  job.targets.assign(targets.Data(), targets.Data() + edge_count);
+
+  Napi::Value wv = input.Get("weights");
+  if (!wv.IsUndefined() && !wv.IsNull()) {
+    if (!wv.IsTypedArray()) {
+      Napi::TypeError::New(env, "weights must be a Float64Array").ThrowAsJavaScriptException();
+      return false;
+    }
+    Napi::Float64Array weights = wv.As<Napi::Float64Array>();
+    if (weights.ElementLength() != edge_count) {
+      Napi::RangeError::New(env, "weights length must match edge count")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
+    job.weights.assign(weights.Data(), weights.Data() + edge_count);
+    job.has_weights = true;
+  }
+
+  ApplyOptions(input, job);
+  return true;
+}
+
+bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
+  if (!input.Get("nodeCount").IsNumber()) {
+    Napi::TypeError::New(env, "nodeCount must be a number").ThrowAsJavaScriptException();
+    return false;
+  }
+  job.node_count = input.Get("nodeCount").As<Napi::Number>().Uint32Value();
+
+  Napi::Value ov = input.Get("offsets");
+  Napi::Value tv = input.Get("targets");
+  if (!ov.IsTypedArray() || !tv.IsTypedArray()) {
+    Napi::TypeError::New(env, "offsets and targets must be Uint32Array")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  Napi::Uint32Array offsets = ov.As<Napi::Uint32Array>();
+  Napi::Uint32Array targets = tv.As<Napi::Uint32Array>();
+
+  if (offsets.ElementLength() != static_cast<size_t>(job.node_count) + 1) {
+    Napi::RangeError::New(env, "offsets length must be nodeCount + 1")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  const uint32_t* offsets_data = offsets.Data();
+  const uint32_t edge_count = offsets_data[job.node_count];
+  if (targets.ElementLength() != edge_count) {
+    Napi::RangeError::New(env, "targets length must match offsets[-1]")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+
+  job.targets.assign(targets.Data(), targets.Data() + edge_count);
+  job.sources.resize(edge_count);
+  for (uint32_t v = 0; v < job.node_count; ++v) {
+    const uint32_t start = offsets_data[v];
+    const uint32_t end = offsets_data[v + 1];
+    for (uint32_t e = start; e < end; ++e) {
+      job.sources[e] = v;
+    }
+  }
+
+  Napi::Value wv = input.Get("weights");
+  if (!wv.IsUndefined() && !wv.IsNull()) {
+    if (!wv.IsTypedArray()) {
+      Napi::TypeError::New(env, "weights must be a Float64Array").ThrowAsJavaScriptException();
+      return false;
+    }
+    Napi::Float64Array weights = wv.As<Napi::Float64Array>();
+    if (weights.ElementLength() != edge_count) {
+      Napi::RangeError::New(env, "weights length must match edge count")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
+    job.weights.assign(weights.Data(), weights.Data() + edge_count);
+    job.has_weights = true;
+  }
+
+  ApplyOptions(input, job);
+  return true;
 }
 
 Napi::Object BuildResultObject(Napi::Env env, const LeidenResultC& result) {
@@ -194,6 +316,42 @@ Napi::Object BuildResultObject(Napi::Env env, const LeidenResultC& result) {
 }
 
 // ---------------------------------------------------------------------------
+// AsyncWorker for the non-blocking variants.
+
+class LeidenAsyncWorker : public Napi::AsyncWorker {
+ public:
+  LeidenAsyncWorker(Napi::Env env,
+                    Napi::Promise::Deferred deferred,
+                    LeidenJob&& job)
+      : Napi::AsyncWorker(env), deferred_(deferred), job_(std::move(job)) {}
+
+  void Execute() override {
+    try {
+      result_ = RunLeidenJob(job_);
+    } catch (const std::exception& e) {
+      SetError(e.what());
+    } catch (...) {
+      SetError("unknown C++ exception in Leiden worker");
+    }
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(BuildResultObject(Env(), result_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  LeidenJob job_;
+  LeidenResultC result_;
+};
+
+// ---------------------------------------------------------------------------
 // JS entry points.
 
 Napi::Value Version(const Napi::CallbackInfo& info) {
@@ -202,68 +360,15 @@ Napi::Value Version(const Napi::CallbackInfo& info) {
 
 Napi::Value LeidenFromEdgeList(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(env, "expected an options object").ThrowAsJavaScriptException();
     return env.Undefined();
   }
   Napi::Object input = info[0].As<Napi::Object>();
-
-  if (!input.Has("nodeCount") || !input.Get("nodeCount").IsNumber()) {
-    Napi::TypeError::New(env, "nodeCount must be a number").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  const uint32_t node_count = input.Get("nodeCount").As<Napi::Number>().Uint32Value();
-
-  if (!input.Has("sources") || !input.Get("sources").IsTypedArray()) {
-    Napi::TypeError::New(env, "sources must be a Uint32Array").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  Napi::Uint32Array sources = input.Get("sources").As<Napi::Uint32Array>();
-
-  if (!input.Has("targets") || !input.Get("targets").IsTypedArray()) {
-    Napi::TypeError::New(env, "targets must be a Uint32Array").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  Napi::Uint32Array targets = input.Get("targets").As<Napi::Uint32Array>();
-
-  if (sources.ElementLength() != targets.ElementLength()) {
-    Napi::RangeError::New(env, "sources and targets must have equal length")
-        .ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  const size_t edge_count = sources.ElementLength();
-
-  std::vector<double> edge_weights;
-  bool has_weights = false;
-  if (input.Has("weights") && !input.Get("weights").IsUndefined()) {
-    Napi::Value w = input.Get("weights");
-    if (!w.IsTypedArray()) {
-      Napi::TypeError::New(env, "weights must be a Float64Array").ThrowAsJavaScriptException();
-      return env.Undefined();
-    }
-    Napi::Float64Array weights = w.As<Napi::Float64Array>();
-    if (weights.ElementLength() != edge_count) {
-      Napi::RangeError::New(env, "weights length must match edge count")
-          .ThrowAsJavaScriptException();
-      return env.Undefined();
-    }
-    edge_weights.assign(weights.Data(), weights.Data() + edge_count);
-    has_weights = true;
-  }
-
-  LeidenCallOptions opts = ReadOptions(input);
-
+  LeidenJob job;
+  if (!ReadEdgeListJob(env, input, job)) return env.Undefined();
   try {
-    igraph_t g;
-    BuildIgraphFromEdges(&g, node_count, sources.Data(), targets.Data(), edge_count,
-                         opts.directed);
-    IgraphGuard g_guard(&g);
-
-    std::unique_ptr<Graph> graph(
-        has_weights ? Graph::GraphFromEdgeWeights(&g, edge_weights) : new Graph(&g));
-    LeidenResultC result = RunLeiden(*graph, opts);
-    return BuildResultObject(env, result);
+    return BuildResultObject(env, RunLeidenJob(job));
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
     return env.Undefined();
@@ -272,77 +377,68 @@ Napi::Value LeidenFromEdgeList(const Napi::CallbackInfo& info) {
 
 Napi::Value LeidenFromCsrJs(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(env, "expected an options object").ThrowAsJavaScriptException();
     return env.Undefined();
   }
   Napi::Object input = info[0].As<Napi::Object>();
-
-  const uint32_t node_count = input.Get("nodeCount").As<Napi::Number>().Uint32Value();
-  Napi::Uint32Array offsets = input.Get("offsets").As<Napi::Uint32Array>();
-  Napi::Uint32Array targets = input.Get("targets").As<Napi::Uint32Array>();
-
-  if (offsets.ElementLength() != static_cast<size_t>(node_count) + 1) {
-    Napi::RangeError::New(env, "offsets length must be nodeCount + 1")
-        .ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  const uint32_t* offsets_data = offsets.Data();
-  const uint32_t edge_count = offsets_data[node_count];
-  if (targets.ElementLength() != edge_count) {
-    Napi::RangeError::New(env, "targets length must match offsets[-1]")
-        .ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  const uint32_t* targets_data = targets.Data();
-
-  std::vector<double> edge_weights;
-  bool has_weights = false;
-  if (input.Has("weights") && !input.Get("weights").IsUndefined()) {
-    Napi::Float64Array weights = input.Get("weights").As<Napi::Float64Array>();
-    if (weights.ElementLength() != edge_count) {
-      Napi::RangeError::New(env, "weights length must match edge count")
-          .ThrowAsJavaScriptException();
-      return env.Undefined();
-    }
-    edge_weights.assign(weights.Data(), weights.Data() + edge_count);
-    has_weights = true;
-  }
-
-  // Expand CSR -> flat source array, then reuse the edge-list path. This
-  // costs one extra allocation but keeps the C++ code paths unified.
-  std::vector<uint32_t> sources(edge_count);
-  for (uint32_t v = 0; v < node_count; ++v) {
-    const uint32_t start = offsets_data[v];
-    const uint32_t end = offsets_data[v + 1];
-    for (uint32_t e = start; e < end; ++e) {
-      sources[e] = v;
-    }
-  }
-
-  LeidenCallOptions opts = ReadOptions(input);
-
+  LeidenJob job;
+  if (!ReadCsrJob(env, input, job)) return env.Undefined();
   try {
-    igraph_t g;
-    BuildIgraphFromEdges(&g, node_count, sources.data(), targets_data, edge_count,
-                         opts.directed);
-    IgraphGuard g_guard(&g);
-
-    std::unique_ptr<Graph> graph(
-        has_weights ? Graph::GraphFromEdgeWeights(&g, edge_weights) : new Graph(&g));
-    LeidenResultC result = RunLeiden(*graph, opts);
-    return BuildResultObject(env, result);
+    return BuildResultObject(env, RunLeidenJob(job));
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
     return env.Undefined();
   }
 }
 
+Napi::Value LeidenFromEdgeListAsync(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  auto deferred = Napi::Promise::Deferred::New(env);
+  if (info.Length() < 1 || !info[0].IsObject()) {
+    deferred.Reject(Napi::TypeError::New(env, "expected an options object").Value());
+    return deferred.Promise();
+  }
+  Napi::Object input = info[0].As<Napi::Object>();
+  LeidenJob job;
+  if (!ReadEdgeListJob(env, input, job)) {
+    // ReadEdgeListJob threw a JS exception synchronously; convert that into a
+    // promise rejection so callers get consistent error-handling semantics.
+    Napi::Error pending = env.GetAndClearPendingException();
+    deferred.Reject(pending.Value());
+    return deferred.Promise();
+  }
+  auto* worker = new LeidenAsyncWorker(env, deferred, std::move(job));
+  worker->Queue();
+  return deferred.Promise();
+}
+
+Napi::Value LeidenFromCsrAsync(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  auto deferred = Napi::Promise::Deferred::New(env);
+  if (info.Length() < 1 || !info[0].IsObject()) {
+    deferred.Reject(Napi::TypeError::New(env, "expected an options object").Value());
+    return deferred.Promise();
+  }
+  Napi::Object input = info[0].As<Napi::Object>();
+  LeidenJob job;
+  if (!ReadCsrJob(env, input, job)) {
+    Napi::Error pending = env.GetAndClearPendingException();
+    deferred.Reject(pending.Value());
+    return deferred.Promise();
+  }
+  auto* worker = new LeidenAsyncWorker(env, deferred, std::move(job));
+  worker->Queue();
+  return deferred.Promise();
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("version", Napi::Function::New(env, Version));
   exports.Set("leidenFromEdgeList", Napi::Function::New(env, LeidenFromEdgeList));
   exports.Set("leidenFromCsr", Napi::Function::New(env, LeidenFromCsrJs));
+  exports.Set("leidenFromEdgeListAsync",
+              Napi::Function::New(env, LeidenFromEdgeListAsync));
+  exports.Set("leidenFromCsrAsync", Napi::Function::New(env, LeidenFromCsrAsync));
   return exports;
 }
 

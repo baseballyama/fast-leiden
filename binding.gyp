@@ -16,16 +16,15 @@
       "dependencies": [
         "<!(node -p \"require('node-addon-api').gyp\")"
       ],
-      "libraries": [
-        "<(deps_root)/lib/liblibleidenalg.a",
-        "<(deps_root)/lib/libigraph.a"
-      ],
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
       "cflags_cc": ["-std=c++17", "-fexceptions"],
-      "defines": [],
       "conditions": [
         ["OS=='mac'", {
+          "libraries": [
+            "<(deps_root)/lib/liblibleidenalg.a",
+            "<(deps_root)/lib/libigraph.a"
+          ],
           "xcode_settings": {
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
             "CLANG_CXX_LIBRARY": "libc++",
@@ -35,9 +34,17 @@
           }
         }],
         ["OS=='linux'", {
+          "libraries": [
+            "<(deps_root)/lib/liblibleidenalg.a",
+            "<(deps_root)/lib/libigraph.a"
+          ],
           "ldflags": ["-Wl,--exclude-libs,ALL"]
         }],
         ["OS=='win'", {
+          "libraries": [
+            "<(deps_root)/lib/libleidenalg.lib",
+            "<(deps_root)/lib/igraph.lib"
+          ],
           "msvs_settings": {
             "VCCLCompilerTool": {
               "ExceptionHandling": 1,

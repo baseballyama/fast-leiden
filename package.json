@@ -30,7 +30,7 @@
     "native",
     "vendor/igraph",
     "vendor/libleidenalg",
-    "scripts/build-deps.sh",
+    "scripts/build-deps.mjs",
     "binding.gyp",
     "LICENSE",
     "README.md"
@@ -40,7 +40,7 @@
   },
   "scripts": {
     "build": "pnpm build:deps && pnpm build:native && pnpm build:ts",
-    "build:deps": "bash scripts/build-deps.sh",
+    "build:deps": "node scripts/build-deps.mjs",
     "build:native": "node-gyp rebuild",
     "build:ts": "tsc -p tsconfig.json",
     "clean": "rimraf dist build vendor/build-deps",

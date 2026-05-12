@@ -40,6 +40,10 @@ interface NativeBinding {
   version(): string;
   leidenFromEdgeList(input: NativeLeidenInput): NativeLeidenResult;
   leidenFromCsr(input: NativeLeidenCsrInput): NativeLeidenResult;
+  leidenFromEdgeListAsync(
+    input: NativeLeidenInput,
+  ): Promise<NativeLeidenResult>;
+  leidenFromCsrAsync(input: NativeLeidenCsrInput): Promise<NativeLeidenResult>;
 }
 
 const bindingPath = join(

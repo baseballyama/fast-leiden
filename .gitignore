@@ -29,6 +29,7 @@ pnpm-debug.log*
 
 # Benchmark output
 bench/results/
+bench/.venv/
 
 # CMake-built deps
 vendor/build-deps/

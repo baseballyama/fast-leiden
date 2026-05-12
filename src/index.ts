@@ -53,6 +53,55 @@ export const leidenFromCsr = (input: LeidenCsrInput): LeidenResult => {
   });
 };
 
+/**
+ * Asynchronous edge-list variant. The Leiden optimisation runs on a libuv
+ * worker thread; the returned Promise resolves with the same shape as
+ * {@link leiden}.
+ *
+ * Prefer this for graphs large enough that the synchronous call would
+ * noticeably stall the event loop.
+ */
+export const leidenAsync = (input: LeidenInput): Promise<LeidenResult> => {
+  try {
+    validateEdgeListInput(input);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  return native.leidenFromEdgeListAsync({
+    nodeCount: input.nodeCount,
+    sources: input.sources,
+    targets: input.targets,
+    weights: input.weights,
+    qualityFunction: input.qualityFunction,
+    resolution: input.resolution,
+    maxIterations: input.maxIterations,
+    seed: input.seed,
+    directed: input.directed,
+  });
+};
+
+/** Asynchronous CSR variant. See {@link leidenAsync}. */
+export const leidenFromCsrAsync = (
+  input: LeidenCsrInput,
+): Promise<LeidenResult> => {
+  try {
+    validateCsrInput(input);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  return native.leidenFromCsrAsync({
+    nodeCount: input.nodeCount,
+    offsets: input.offsets,
+    targets: input.targets,
+    weights: input.weights,
+    qualityFunction: input.qualityFunction,
+    resolution: input.resolution,
+    maxIterations: input.maxIterations,
+    seed: input.seed,
+    directed: input.directed,
+  });
+};
+
 // --- Validation -----------------------------------------------------------
 //
 // Validation happens at the JS/C++ boundary. The TS side rejects with clear

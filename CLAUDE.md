@@ -36,8 +36,10 @@ for every call. `fast-leiden` collapses that into an in-process native call.
 - **Validate at the JS/C++ boundary.** TS-side validation gives clear errors;
   C++-side validation is the segfault safety net. Both layers are mandatory
   for any input that crosses into native.
-- **Sync first, async later.** Start with synchronous calls. A worker-thread
-  async API is a planned addition, not a v0 requirement.
+- **Sync first, async also.** Both synchronous and worker-thread async
+  variants are exposed (`leiden` / `leidenAsync`, `leidenFromCsr` /
+  `leidenFromCsrAsync`). Callers should reach for the async pair on graphs
+  big enough that the event loop would notice.
 - **CSR is the primary path for large graphs.** Edge-list input is the
   user-friendly entry point; CSR is the performance-oriented one. Both stay,
   because they target different use cases — this is not a parallel API.
@@ -58,9 +60,18 @@ for every call. `fast-leiden` collapses that into an in-process native call.
 6. **Call libleidenalg `Optimiser`** — done. Modularity + CPM partition
    types are exposed; membership is returned as a `Uint32Array`.
 7. **Tests** — done: two-triangle graph (edge list + CSR), weighted edges,
-   deterministic seed, invalid-input validation.
-8. **Benchmark against the Python `igraph + leidenalg` baseline** — still
-   TODO. `bench/basic.ts` is a placeholder.
+   deterministic seed, invalid-input validation, async/event-loop test.
+8. **Benchmark against the Python `igraph + leidenalg` baseline** — done.
+   `pnpm bench` generates a stochastic-block-model graph and reports
+   fast-leiden vs Python timings (Python is auto-detected; missing
+   `leidenalg` just skips the comparison). Last measured on the dev
+   machine: roughly 4–5× faster than calling leidenalg from Python on
+   500–2000 node graphs.
+9. **Async API** — done. `Napi::AsyncWorker` powers `leidenAsync` /
+   `leidenFromCsrAsync`.
+10. **Cross-platform build** — `scripts/build-deps.mjs` is the canonical
+    builder (Linux/macOS/Windows). CI runs the matrix on
+    `ubuntu-latest`, `macos-latest`, `windows-latest` × Node 20/22/24.
 
 ---
 

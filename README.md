@@ -62,6 +62,17 @@ const resultCsr = leidenFromCsr({
 // result.iterations : number of outer-loop iterations the algorithm ran
 ```
 
+For graphs large enough that the synchronous call would noticeably stall the
+event loop, use the async variants — the Leiden optimisation runs on a libuv
+worker thread:
+
+```ts
+import { leidenAsync, leidenFromCsrAsync } from "fast-leiden";
+
+const result = await leidenAsync({ nodeCount, sources, targets, seed: 42 });
+const resultCsr = await leidenFromCsrAsync({ nodeCount, offsets, targets });
+```
+
 See [`src/types.ts`](./src/types.ts) for the full type definitions.
 
 ## Install
@@ -97,6 +108,21 @@ reuse the install tree under `vendor/build-deps/install/`.
 - CMake >= 3.23 (the requirement comes from `libleidenalg`)
 - Python 3 (for `node-gyp`)
 
+## Benchmark
+
+A small bench script lives at `bench/basic.ts`. It generates a stochastic
+block model graph, runs fast-leiden (sync + async), and — if a Python
+environment with `igraph` and `leidenalg` is reachable — runs the same graph
+through Python's leidenalg for comparison:
+
+```bash
+# optional: Python comparison
+python3 -m venv bench/.venv
+bench/.venv/bin/pip install igraph leidenalg
+
+pnpm bench
+```
+
 ## Repository layout
 
 ```
@@ -104,7 +130,7 @@ fast-leiden/
   src/                  TypeScript source — public API
   native/               C++ N-API binding source
   scripts/
-    build-deps.sh       Builds igraph + libleidenalg into vendor/build-deps
+    build-deps.mjs      Cross-platform CMake driver for igraph + libleidenalg
   vendor/
     igraph/             git submodule — igraph C library
     libleidenalg/       git submodule — libleidenalg C++ core
