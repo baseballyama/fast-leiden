@@ -17,8 +17,12 @@ Pre-1.0. Working end-to-end on macOS, Linux, and Windows in CI (Node 22 / 24 /
 26). Shipped as an **ES module** with `"type": "module"`. Modularity and CPM
 quality functions are supported. Both edge-list and CSR input paths are
 implemented. Prebuilt binaries for the major platforms; async runs support
-`AbortSignal`. See [Supported platforms](#supported-platforms) and
-[Known limitations](#known-limitations) before adopting in production.
+`AbortSignal` (soft cancel). Every call into the native side is serialized
+by a process-global mutex (igraph upstream is not thread-safe), so
+`Promise.all` of async calls completes correctly but does not run in
+parallel. See [Supported platforms](#supported-platforms) and
+[Known limitations](#known-limitations) before adopting in production. To
+report a security issue, see [SECURITY.md](./SECURITY.md).
 
 ## Goals
 
@@ -225,6 +229,16 @@ runtimes.
   milliseconds.
 - **Always prefer CSR for large graphs** if you already have CSR arrays. The
   edge-list path runs an extra conversion step internally.
+- **For parallel throughput, span processes — not just promises.** Async
+  calls are serialized inside the native addon (see
+  [Async semantics](#async-semantics)). One `leidenAsync` keeps the event
+  loop responsive; a hundred `leidenAsync` calls run one-at-a-time on the
+  worker pool. Use multiple `worker_threads` (each loads its own addon
+  copy) or multiple processes if you want N concurrent runs.
+- **Need a hard deadline?** Run the call inside a `worker_threads` worker
+  or child process you can `terminate()` / `kill()`. `AbortSignal` only
+  unblocks your JS code; it does not release the native CPU/memory until
+  the run finishes.
 
 ## Install
 
@@ -325,24 +339,46 @@ further setup, and `pnpm bench` finds Python's leidenalg out of the box.
 
 ## Supported platforms
 
-CI matrix (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)):
+Two matrices live next to each other in CI; both have to be green for a
+release to ship.
 
-| OS             | Node 22 | Node 24 | Node 26 | Notes                               |
-| -------------- | ------- | ------- | ------- | ----------------------------------- |
-| ubuntu-latest  | ✅      | ✅      | ✅      | glibc; built against the runner SDK |
-| macos-latest   | ✅      | ✅      | ✅      | arm64; deployment target 11.0       |
-| windows-latest | ✅      | ✅      | ✅      | x64; MSVC                           |
+**Source build + test matrix**
+([`ci.yml`](./.github/workflows/ci.yml)) — exercises every commit against
+the source build, the public API, and the sanitizers:
 
-In addition:
+| OS             | Node 22 | Node 24 | Node 26 | Notes                                  |
+| -------------- | ------- | ------- | ------- | -------------------------------------- |
+| ubuntu-latest  | ✅      | ✅      | ✅      | glibc; ASan + UBSan job runs alongside |
+| macos-latest   | ✅      | ✅      | ✅      | arm64; deployment target 11.0          |
+| windows-latest | ✅      | ✅      | ✅      | x64; MSVC                              |
 
-- **Linux musl (Alpine, distroless musl images)** is not currently part of CI.
-  The source build _should_ work given a musl C++17 toolchain, CMake, and
-  Python, but it is not validated on every commit. If you depend on musl,
-  please file an issue so we can wire it into CI.
-- **macOS x64** is no longer tested directly (`macos-latest` is arm64 on
-  GitHub Actions). The build is universal-2-compatible in theory but the
-  arm64 / x64 split is not exercised here.
-- **Linux arm64** is not currently part of CI.
+A `pack-install` job in the same workflow also packs the tarball, installs
+it into a fresh project, and runs a smoke test on `ubuntu-latest` and
+`macos-latest` × Node 22 / 24.
+
+**Prebuild + publish matrix**
+([`release.yml`](./.github/workflows/release.yml)) — runs the prebuild
+matrix on every push to `main` once the Version Packages PR merges, and
+refuses to publish unless every target produced a `*.node`:
+
+| Target         | Runner           | Notes                                                              |
+| -------------- | ---------------- | ------------------------------------------------------------------ |
+| `linux-x64`    | `ubuntu-latest`  | glibc                                                              |
+| `darwin-arm64` | `macos-latest`   | Apple Silicon                                                      |
+| `darwin-x64`   | `macos-13`       | Intel Mac, kept on the Intel runner specifically for this prebuild |
+| `win32-x64`    | `windows-latest` | MSVC                                                               |
+
+Not on the matrix today — these fall through to the source-build install
+path and need CMake + a C++17 toolchain + Python at install time:
+
+- **Linux musl** (Alpine, distroless musl images). The source build should
+  work with a musl C++17 toolchain, but it's not gated on each commit.
+- **Linux arm64**.
+- **FreeBSD, other BSDs**.
+
+If you depend on one of these, please open an issue with the runner and
+toolchain version you use; we'd rather add the target than tell you to
+ship without a prebuild.
 
 ### Node-API compatibility policy
 

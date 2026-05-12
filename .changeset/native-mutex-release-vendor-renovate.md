@@ -36,7 +36,7 @@ automated vendor updates, and the operational maturity files.
   release for `igraph` and `libleidenalg`, checks out the tag inside the
   submodule, updates the `*_VERSION_FALLBACK` constants in
   `scripts/build-deps.mjs`, and rewrites the README "Vendored upstream"
-  table between the `<!-- vendor-versions:start -->` /  `:end -->`
+  table between the `<!-- vendor-versions:start -->` / `:end -->`
   markers. If anything changed, the workflow opens a `chore/vendor-update`
   PR — never auto-merged, because a submodule bump can shift partition
   output deterministically.
