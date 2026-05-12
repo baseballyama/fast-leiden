@@ -410,8 +410,16 @@ jobs:
         # We upload it both as a workflow artifact (365-day retention) and as
         # a GitHub Release asset (permanent, public — see the "Attach SBOM to
         # GitHub Release" step below).
+        #
+        # `@cyclonedx/cyclonedx-npm` shells out to `npm ls`, which needs a
+        # `package-lock.json` to enumerate the tree. We use pnpm in CI and
+        # don't ship a package-lock, so we synthesise one with
+        # `npm install --package-lock-only --omit=dev --ignore-scripts`
+        # before the SBOM tool runs. `--package-lock-only` writes the lock
+        # without touching node_modules.
         run: |
           set -euo pipefail
+          npm install --package-lock-only --omit=dev --ignore-scripts
           npx --yes @cyclonedx/cyclonedx-npm@2 \
             --omit dev \
             --output-format JSON \
