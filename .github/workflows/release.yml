@@ -405,21 +405,23 @@ jobs:
           tar -tzf /tmp/fast-leiden-*.tgz | grep '^package/prebuilds/'
 
       - name: Generate SBOM (CycloneDX)
+        id: sbom
         if: needs.check.outputs.hasChangesets == 'false'
-        # Produces a CycloneDX 1.5 JSON for the production dependency tree.
-        # We upload it both as a workflow artifact (365-day retention) and as
-        # a GitHub Release asset (permanent, public — see the "Attach SBOM to
-        # GitHub Release" step below).
+        # Best-effort: failure here does NOT block npm publish (see
+        # `continue-on-error` below). SBOM is a nice-to-have asset on the
+        # GitHub Release; the package itself is fully signed via npm
+        # provenance.
         #
         # `@cyclonedx/cyclonedx-npm` shells out to `npm ls`, which needs a
         # `package-lock.json` to enumerate the tree. We use pnpm in CI and
         # don't ship a package-lock, so we synthesise one with
-        # `npm install --package-lock-only --omit=dev --ignore-scripts`
-        # before the SBOM tool runs. `--package-lock-only` writes the lock
-        # without touching node_modules.
+        # `npm install --package-lock-only`. `--legacy-peer-deps` tolerates
+        # the rollup/vite peer-dep churn that npm's strict resolver
+        # rejects but pnpm doesn't care about.
+        continue-on-error: true
         run: |
           set -euo pipefail
-          npm install --package-lock-only --omit=dev --ignore-scripts
+          npm install --package-lock-only --ignore-scripts --legacy-peer-deps
           npx --yes @cyclonedx/cyclonedx-npm@2 \
             --omit dev \
             --output-format JSON \
@@ -430,12 +432,12 @@ jobs:
           node -e "const s=require('./sbom.cdx.json'); console.log('SBOM components:', (s.components||[]).length, 'serial:', s.serialNumber);"
 
       - name: Upload SBOM artifact
-        if: needs.check.outputs.hasChangesets == 'false'
+        if: needs.check.outputs.hasChangesets == 'false' && steps.sbom.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: sbom-cdx
           path: sbom.cdx.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 365
 
       - name: Publish via changesets
@@ -455,11 +457,10 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
 
       - name: Attach SBOM to GitHub Release
-        # Only run if `changesets/action` actually published a new version.
-        # The action exposes `published` ('true'/'false' string) and
-        # `publishedPackages` for that case. For our single-package repo the
-        # release tag is `v<version>` (changesets default).
-        if: needs.check.outputs.hasChangesets == 'false' && steps.publish.outputs.published == 'true'
+        # Only run if `changesets/action` actually published a new version
+        # AND we managed to generate the SBOM upstream. SBOM is
+        # best-effort, so we skip the attach if the generate step failed.
+        if: needs.check.outputs.hasChangesets == 'false' && steps.publish.outputs.published == 'true' && steps.sbom.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
