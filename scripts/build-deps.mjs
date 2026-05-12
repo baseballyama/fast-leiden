@@ -52,10 +52,19 @@ const run = (cmd, args, opts = {}) => {
   }
 };
 
+// binding.gyp links against `<INSTALL_DIR>/lib/...` on every platform, so the
+// CMake configure step below pins CMAKE_INSTALL_LIBDIR to `lib`. Anything in
+// `lib64/` would be a stale leftover from a build that predates that pin —
+// surface it instead of silently letting node-gyp rebuild fail.
 const findInstalledLib = (basename) => {
-  for (const subdir of ["lib", "lib64"]) {
-    const candidate = join(INSTALL_DIR, subdir, basename);
-    if (existsSync(candidate)) return candidate;
+  const expected = join(INSTALL_DIR, "lib", basename);
+  if (existsSync(expected)) return expected;
+  const legacy = join(INSTALL_DIR, "lib64", basename);
+  if (existsSync(legacy)) {
+    die(
+      `Found ${legacy} but binding.gyp links against ${expected}. ` +
+        `Run \`pnpm clean\` (or remove vendor/build-deps) and rebuild.`,
+    );
   }
   return null;
 };
@@ -106,6 +115,12 @@ const cmakeConfigure = (sourceDir, buildDir, extra) => {
     buildDir,
     `-DCMAKE_BUILD_TYPE=Release`,
     `-DCMAKE_INSTALL_PREFIX=${INSTALL_DIR}`,
+    // GNUInstallDirs defaults to `lib64` on multilib distributions (RHEL,
+    // Fedora, openSUSE …). binding.gyp links against `<prefix>/lib/...` on
+    // every platform, so force the libdir to `lib` to keep the two in sync.
+    // Without this pin, `pnpm install` succeeds at the CMake step but fails
+    // at `node-gyp rebuild` on those distros.
+    `-DCMAKE_INSTALL_LIBDIR=lib`,
     `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`,
     `-DBUILD_SHARED_LIBS=OFF`,
     ...extra,
@@ -160,7 +175,7 @@ const main = () => {
   buildIgraph();
   buildLibleidenalg();
   log(`==> Done. Headers: ${join(INSTALL_DIR, "include")}`);
-  log(`==> Libs:    ${join(INSTALL_DIR, "lib")} (or lib64)`);
+  log(`==> Libs:    ${join(INSTALL_DIR, "lib")}`);
 };
 
 main();

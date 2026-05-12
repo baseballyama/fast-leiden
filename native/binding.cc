@@ -185,6 +185,28 @@ bool ValidateFiniteWeights(Napi::Env env, const double* data, size_t n) {
   return true;
 }
 
+// Defence in depth: Uint32Value() silently coerces 1.5 → 1, -1 → 4294967295,
+// and NaN → 0. Any of those can corrupt downstream sizing (e.g. a "huge"
+// nodeCount triggers an OOM allocation, a 0 walks past the bounds check
+// without reporting it). Reject anything that isn't a clean integer in range.
+bool ReadNodeCount(Napi::Env env, Napi::Object& input, uint32_t& out) {
+  Napi::Value v = input.Get("nodeCount");
+  if (!v.IsNumber()) {
+    Napi::TypeError::New(env, "nodeCount must be a number")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  double raw = v.As<Napi::Number>().DoubleValue();
+  if (!std::isfinite(raw) || raw < 0.0 || raw > 4294967295.0 ||
+      raw != std::floor(raw)) {
+    Napi::RangeError::New(env, "nodeCount must be an integer in [0, 2^32)")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  out = static_cast<uint32_t>(raw);
+  return true;
+}
+
 // Returns true on success. On failure, raises a JS exception and returns false
 // so the caller can short-circuit (consistent with ReadEdgeListJob / ReadCsrJob).
 bool ApplyOptions(Napi::Env env, Napi::Object& obj, LeidenJob& job) {
@@ -194,11 +216,30 @@ bool ApplyOptions(Napi::Env env, Napi::Object& obj, LeidenJob& job) {
   }
   Napi::Value res = obj.Get("resolution");
   if (res.IsNumber()) {
-    job.resolution = res.As<Napi::Number>().DoubleValue();
+    // Defence in depth: DoubleValue() happily returns NaN here, which would
+    // propagate through libleidenalg and surface as a quality=NaN result.
+    // TS already rejects this, but the native layer must not be the weak link.
+    double raw = res.As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(raw) || raw < 0.0) {
+      Napi::RangeError::New(env, "resolution must be a non-negative finite number")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
+    job.resolution = raw;
   }
   Napi::Value mi = obj.Get("maxIterations");
   if (mi.IsNumber()) {
-    job.max_iterations = mi.As<Napi::Number>().Int32Value();
+    // Defence in depth: Int32Value() silently floors 1.5 → 1 and turns NaN
+    // into 0, which would skip the optimisation loop entirely and return an
+    // un-improved partition with iterations: 0.
+    double raw = mi.As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(raw) || raw < 1.0 || raw > 2147483647.0 ||
+        raw != std::floor(raw)) {
+      Napi::RangeError::New(env, "maxIterations must be a positive integer")
+          .ThrowAsJavaScriptException();
+      return false;
+    }
+    job.max_iterations = static_cast<int>(raw);
   }
   Napi::Value seed = obj.Get("seed");
   if (seed.IsNumber()) {
@@ -226,11 +267,7 @@ bool ApplyOptions(Napi::Env env, Napi::Object& obj, LeidenJob& job) {
 // Returns true on success, false on validation failure (in which case a JS
 // exception is already pending and the caller should return Undefined()).
 bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
-  if (!input.Get("nodeCount").IsNumber()) {
-    Napi::TypeError::New(env, "nodeCount must be a number").ThrowAsJavaScriptException();
-    return false;
-  }
-  job.node_count = input.Get("nodeCount").As<Napi::Number>().Uint32Value();
+  if (!ReadNodeCount(env, input, job.node_count)) return false;
 
   Napi::Value sv = input.Get("sources");
   Napi::Value tv = input.Get("targets");
@@ -271,11 +308,7 @@ bool ReadEdgeListJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
 }
 
 bool ReadCsrJob(Napi::Env env, Napi::Object input, LeidenJob& job) {
-  if (!input.Get("nodeCount").IsNumber()) {
-    Napi::TypeError::New(env, "nodeCount must be a number").ThrowAsJavaScriptException();
-    return false;
-  }
-  job.node_count = input.Get("nodeCount").As<Napi::Number>().Uint32Value();
+  if (!ReadNodeCount(env, input, job.node_count)) return false;
 
   Napi::Value ov = input.Get("offsets");
   Napi::Value tv = input.Get("targets");
