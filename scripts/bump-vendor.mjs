@@ -127,9 +127,20 @@ const writeChangeset = (changed) => {
   // Vendor bumps are user-visible (community ids may shift) and the project
   // is post-1.0, so by policy they go out as a minor release. The changesets
   // CLI consumes any .md in .changeset/ with the right frontmatter, so we
-  // just drop a file. Filename is stable so re-runs on the same PR branch
-  // update the file in place instead of accumulating one per workflow run.
-  const changesetPath = resolve(ROOT, ".changeset/vendor-update.md");
+  // just drop a file.
+  //
+  // Filename includes the UTC date + bumped versions so it is unique per
+  // bump. A stable filename was tempting but breaks when bump PR A is
+  // merged before bump PR B is opened: B would overwrite A's pending
+  // changeset and drop its release notes. With a per-bump filename the
+  // pending notes accumulate until the next `version packages` run, which
+  // is the behaviour changesets is designed around.
+  const stamp = new Date().toISOString().slice(0, 10);
+  const slug = changed
+    .map((c) => `${c.name}-${c.version}`)
+    .join("_")
+    .replace(/[^a-zA-Z0-9._-]/g, "-");
+  const changesetPath = resolve(ROOT, `.changeset/vendor-update-${stamp}-${slug}.md`);
   const lines = changed.map((c) => `- \`${c.name}\` → \`${c.version}\``).join("\n");
   const body = [
     "---",
