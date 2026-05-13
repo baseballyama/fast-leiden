@@ -179,8 +179,8 @@ jobs:
     # The other jobs run against the source tree. This one validates the actual
     # artifact that ships to npm — `pnpm pack` produces the same tarball npm
     # would download, then a fresh empty project installs from it. Catches
-    # `files` mis-globs, install-hook ordering bugs, and missing vendor sources
-    # that show up only in tarball-install mode.
+    # `files` mis-globs and prebuild-loading bugs that show up only in
+    # tarball-install mode.
     # `needs: static` is intentionally omitted — see the `test` job comment.
     runs-on: ${{ matrix.os }}
     strategy:
@@ -200,6 +200,14 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Build prebuild for the host platform
+        # The published tarball no longer ships vendor sources or an install
+        # hook, so the only path a consumer has to a working addon is a
+        # prebuilt binary under `prebuilds/<platform>-<arch>/`. Build one
+        # before packing so the tarball-install smoke test below matches the
+        # production install path.
+        run: pnpm prebuild
 
       - name: Build TypeScript output (needed for the tarball)
         run: pnpm build:ts

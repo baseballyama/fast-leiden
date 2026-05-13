@@ -8,8 +8,7 @@ name: Prebuilds (manual)
 # lives in `release.yml`, which runs the same prebuild matrix on every push
 # to `main` once the Version Packages PR is merged. Use this workflow when
 # you want to exercise the prebuild pipeline without going through a full
-# release (e.g., after touching `scripts/install.mjs`, `scripts/prebuild.mjs`,
-# or `binding.gyp`).
+# release (e.g., after touching `scripts/prebuild.mjs` or `binding.gyp`).
 
 on:
   workflow_dispatch:
@@ -125,24 +124,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/consumer"
           cd "$RUNNER_TEMP/consumer"
           npm init -y
-          # --ignore-scripts on the consumer is wrong; the consumer's install
-          # script (ours, scripts/install.mjs) is what runs. We only want to
-          # confirm the prebuild path resolves — if it falls through to the
-          # source build, that means node-gyp-build couldn't find the
-          # prebuild and the smoke test below will catch the cost.
-          npm install --foreground-scripts "${{ steps.pack.outputs.tarball }}"
-
-      - name: Confirm prebuild was used
-        shell: bash
-        run: |
-          cd "$RUNNER_TEMP/consumer"
-          # If node-gyp-build picked up the prebuild, build/Release/ should
-          # NOT exist (we never ran node-gyp rebuild). Use this as a signal.
-          if [ -d node_modules/fast-leiden/build/Release ]; then
-            echo "ERROR: fell through to source build despite prebuild artifact"
-            exit 1
-          fi
-          echo "OK: prebuild was used, no source build was triggered"
+          # The tarball ships no install hook and no source. If the prebuild
+          # under prebuilds/<target>/ isn't picked up by node-gyp-build, the
+          # smoke test below fails at require() time.
+          npm install "${{ steps.pack.outputs.tarball }}"
 
       - name: Smoke test the installed package
         shell: bash
