@@ -105,3 +105,4 @@ jobs:
             vendor/libleidenalg
             scripts/build-deps.mjs
             README.md
+            .changeset/vendor-update.md

@@ -105,6 +105,15 @@ const checkoutTag = (subPath, tag) => {
   run("git", ["-C", subPath, "checkout", "--detach", tag]);
 };
 
+const readFallbackConstant = (constName) => {
+  const buildDepsPath = resolve(ROOT, "scripts/build-deps.mjs");
+  const src = readFileSync(buildDepsPath, "utf8");
+  const re = new RegExp(`const ${constName} = "([^"]+)";`);
+  const m = src.match(re);
+  if (!m) die(`could not find ${constName} in scripts/build-deps.mjs`);
+  return m[1];
+};
+
 const updateFallbackConstant = (constName, version) => {
   const buildDepsPath = resolve(ROOT, "scripts/build-deps.mjs");
   const before = readFileSync(buildDepsPath, "utf8");
@@ -112,6 +121,27 @@ const updateFallbackConstant = (constName, version) => {
   if (!re.test(before)) die(`could not find ${constName} in scripts/build-deps.mjs`);
   const after = before.replace(re, `$1${version}$3`);
   if (after !== before) writeFileSync(buildDepsPath, after);
+};
+
+const writeChangeset = (changed) => {
+  // Vendor bumps are user-visible (community ids may shift) and the project
+  // is post-1.0, so by policy they go out as a minor release. The changesets
+  // CLI consumes any .md in .changeset/ with the right frontmatter, so we
+  // just drop a file. Filename is stable so re-runs on the same PR branch
+  // update the file in place instead of accumulating one per workflow run.
+  const changesetPath = resolve(ROOT, ".changeset/vendor-update.md");
+  const lines = changed.map((c) => `- \`${c.name}\` → \`${c.version}\``).join("\n");
+  const body = [
+    "---",
+    '"fast-leiden": minor',
+    "---",
+    "",
+    "Bump vendored upstream:",
+    "",
+    lines,
+    "",
+  ].join("\n");
+  writeFileSync(changesetPath, body);
 };
 
 const updateReadme = (versions) => {
@@ -150,31 +180,45 @@ const main = async () => {
     const targetVersion = stripVPrefix(latestTag);
     summary.targetTags[sub.name] = latestTag;
 
+    // The fallback constant is the project's declared upstream version.
+    // Compare against that (not the submodule SHA): a submodule can be
+    // parked on a post-release dev commit, in which case the SHA differs
+    // from the latest tag even though we haven't actually shipped a new
+    // upstream version. We only want to ship a PR on a real version bump.
+    const currentVersion = readFallbackConstant(sub.fallbackConst);
+
+    if (targetVersion === currentVersion) {
+      summary.unchanged.push({ name: sub.name, version: targetVersion });
+      continue;
+    }
+
     const previousSha = currentSubmoduleSha(sub.path);
     checkoutTag(sub.path, latestTag);
     const newSha = currentSubmoduleSha(sub.path);
 
     updateFallbackConstant(sub.fallbackConst, targetVersion);
 
-    if (newSha === previousSha) {
-      summary.unchanged.push({ name: sub.name, version: targetVersion });
-    } else {
-      summary.changed.push({
-        name: sub.name,
-        version: targetVersion,
-        previousSha,
-        newSha,
-      });
-    }
+    summary.changed.push({
+      name: sub.name,
+      version: targetVersion,
+      previousVersion: currentVersion,
+      previousSha,
+      newSha,
+    });
   }
 
-  updateReadme(
-    SUBMODULES.map((sub) => ({
-      name: sub.name,
-      repo: sub.repo,
-      version: stripVPrefix(summary.targetTags[sub.name]),
-    })),
-  );
+  // Only rewrite README / drop a changeset when something actually moved.
+  // Otherwise a no-op run would touch README whitespace and create a PR.
+  if (summary.changed.length > 0) {
+    updateReadme(
+      SUBMODULES.map((sub) => ({
+        name: sub.name,
+        repo: sub.repo,
+        version: stripVPrefix(summary.targetTags[sub.name]),
+      })),
+    );
+    writeChangeset(summary.changed);
+  }
 
   process.stdout.write(`${JSON.stringify(summary)}\n`);
 };
