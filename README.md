@@ -719,10 +719,10 @@ currently pinned versions are:
 
 <!-- vendor-versions:start -->
 
-| Upstream                                                 | Pinned version |
-| -------------------------------------------------------- | -------------- |
-| [`igraph`](https://github.com/igraph/igraph)             | `1.0.1`        |
-| [`libleidenalg`](https://github.com/vtraag/libleidenalg) | `0.12.0`       |
+| Upstream      | Pinned version |
+| ------------- | -------------- |
+| [`igraph`](https://github.com/igraph/igraph) | `1.0.1` |
+| [`libleidenalg`](https://github.com/vtraag/libleidenalg) | `0.12.0` |
 
 _Auto-updated by_ `.github/workflows/vendor-update.yml` _on the daily schedule._
 
