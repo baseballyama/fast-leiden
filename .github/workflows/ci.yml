@@ -19,6 +19,12 @@ permissions:
   contents: read
 
 jobs:
+  # Every job uses `pnpm install --frozen-lockfile --ignore-scripts`. The
+  # tarball ships no install hook, so npm/pnpm would otherwise see our
+  # `binding.gyp` at install time and auto-invoke `node-gyp rebuild`
+  # against an un-built vendor tree. Skipping install scripts and
+  # letting the explicit `pnpm build` / `pnpm prebuild` step drive the
+  # build keeps that under our control.
   static:
     name: Static checks
     runs-on: ubuntu-latest
@@ -39,7 +45,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Format check
         run: pnpm format:check
@@ -119,7 +125,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build
       - run: pnpm test
       # Perf regression gate. The bench is small (~5K nodes / ~30K
@@ -154,7 +160,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-san-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build vendor deps + native addon with ASan/UBSan
         env:
@@ -179,8 +185,8 @@ jobs:
     # The other jobs run against the source tree. This one validates the actual
     # artifact that ships to npm — `pnpm pack` produces the same tarball npm
     # would download, then a fresh empty project installs from it. Catches
-    # `files` mis-globs, install-hook ordering bugs, and missing vendor sources
-    # that show up only in tarball-install mode.
+    # `files` mis-globs and prebuild-loading bugs that show up only in
+    # tarball-install mode.
     # `needs: static` is intentionally omitted — see the `test` job comment.
     runs-on: ${{ matrix.os }}
     strategy:
@@ -199,7 +205,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build prebuild for the host platform
+        # The published tarball no longer ships vendor sources or an install
+        # hook, so the only path a consumer has to a working addon is a
+        # prebuilt binary under `prebuilds/<platform>-<arch>/`. Build one
+        # before packing so the tarball-install smoke test below matches the
+        # production install path.
+        run: pnpm prebuild
 
       - name: Build TypeScript output (needed for the tarball)
         run: pnpm build:ts

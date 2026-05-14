@@ -381,46 +381,38 @@ pnpm add fast-leiden
 
 On the [Tier 1 platforms](#supported-platforms) (`linux-x64` glibc/musl,
 `linux-arm64` glibc/musl, `darwin-arm64`, `win32-x64`) install is a binary
-drop — no CMake, no C++ toolchain, no Python. `darwin-x64` (Intel Mac) is
-**Tier 2** and falls through to the source build (CMake + node-gyp + Python).
+drop — no CMake, no C++ toolchain, no Python. Platforms outside that set
+have to install from a git checkout (see below).
 
 ### Install model
 
 The npm tarball ships **prebuilt binaries via [`prebuildify`](https://github.com/prebuild/prebuildify)**
-for the platforms in our release matrix:
+for the platforms in our release matrix and **nothing else** — no vendored
+sources, no `binding.gyp`, no install hook:
 
-| Platform        | libc  | Status                                                  |
-| --------------- | ----- | ------------------------------------------------------- |
-| `linux-x64`     | glibc | ✅ prebuilt                                             |
-| `linux-x64`     | musl  | ✅ prebuilt (Alpine / distroless musl)                  |
-| `linux-arm64`   | glibc | ✅ prebuilt (AWS Graviton, ARM servers)                 |
-| `linux-arm64`   | musl  | ✅ prebuilt (Alpine on ARM, via dockerized cross-build) |
-| `darwin-arm64`  | —     | ✅ prebuilt (Apple Silicon)                             |
-| `darwin-x64`    | —     | ⚠️ source build only (Intel Mac, Tier 2)                |
-| `win32-x64`     | —     | ✅ prebuilt                                             |
-| `win32-arm64`,… |       | ❌ not yet — file an issue if you need one              |
+| Platform                            | libc  | Status                                                  |
+| ----------------------------------- | ----- | ------------------------------------------------------- |
+| `linux-x64`                         | glibc | ✅ prebuilt                                             |
+| `linux-x64`                         | musl  | ✅ prebuilt (Alpine / distroless musl)                  |
+| `linux-arm64`                       | glibc | ✅ prebuilt (AWS Graviton, ARM servers)                 |
+| `linux-arm64`                       | musl  | ✅ prebuilt (Alpine on ARM, via dockerized cross-build) |
+| `darwin-arm64`                      | —     | ✅ prebuilt (Apple Silicon)                             |
+| `win32-x64`                         | —     | ✅ prebuilt                                             |
+| `darwin-x64`, `win32-arm64`, BSD, … | —     | ❌ install from git checkout (see below)                |
 
-`scripts/install.mjs` runs as the `install` lifecycle script. It looks for a
-prebuild matching the current `<platform>-<arch>` via
-[`node-gyp-build`](https://github.com/prebuild/node-gyp-build); if one exists,
-no toolchain is required. If no prebuild matches (or you're installing from
-a git checkout), it falls back to the **source build**: CMake builds the
-vendored `igraph` and `libleidenalg` static libs, then `node-gyp rebuild`
-compiles the addon against them. The source build needs CMake, a C++17
-toolchain, and Python 3, and takes several minutes the first time.
-
-The tarball still ships the vendored sources so the source-build fallback
-works on any platform that has the toolchain. If you're packaging into a
-container where every byte matters, you can strip `vendor/` after install
-once the addon is built.
+At `require()` time, [`node-gyp-build`](https://github.com/prebuild/node-gyp-build)
+resolves `prebuilds/<platform>-<arch>/` and loads the matching `.node` file. If
+no prebuild matches the host, the require throws a clear "no prebuilt binary"
+error — there is no install-time source-build fallback. Installing on an
+unsupported target therefore means cloning the repo and running `pnpm build`
+yourself (see "For local development" below).
 
 **Release-side guarantee.** The release workflow
 ([`.github/workflows/release.yml`](./.github/workflows/release.yml)) runs
 the prebuild matrix as a hard dependency of the publish job and verifies
 that every platform listed above produced a `*.node` artifact before it
 calls `changeset publish`. A missing platform aborts the publish — we
-never want to ship a tarball with a hole in the matrix that silently
-falls through to source build on consumer machines.
+never want to ship a tarball with a hole in the matrix.
 
 For local development:
 
@@ -488,17 +480,18 @@ release.
 - `win32-x64`
 - Node.js 22 / 24 / 26 (`engines.node` is `>=22`)
 
-**Tier 2 — best-effort, source build.** No prebuilt binary; the install
-hook falls through to building from source via CMake + node-gyp +
-Python 3. We accept bug reports and will land fixes, but we don't gate
-releases on it. If a Tier 2 target stops building, we ship anyway and
-fix it in a follow-up patch release.
+**Tier 2 — best-effort, build from a git checkout.** No prebuilt binary
+ships in the npm tarball, and there is no install-time source build. To
+use fast-leiden on one of these targets, clone the repo with
+`--recursive` and run `pnpm install && pnpm build`; the resulting addon
+loads via the same `node-gyp-build` resolver. We accept bug reports and
+will land fixes, but we don't gate releases on it.
 
 - `darwin-x64` (Intel Mac). GitHub retired the `macos-13` runner, the
   modern free macOS runner is arm64-only, and we don't currently
-  cross-compile or run a paid Intel runner. The source build still
-  works on an Intel Mac with Xcode CLT + CMake + Python 3; let us
-  know if a prebuild path matters for you and we'll prioritise it.
+  cross-compile or run a paid Intel runner. Building from source on an
+  Intel Mac with Xcode CLT + CMake + Python 3 works; let us know if a
+  prebuild path matters for you and we'll prioritise it.
 - Node.js 20 and older 22.x point releases (`engines.node` is advisory;
   the addon is N-API so it _usually_ loads, but we don't run CI on it).
 - Linux distributions outside the libc set above (uClibc, etc.).
@@ -628,11 +621,11 @@ fast-leiden/
   src/                  TypeScript source — public API (ESM)
   native/               C++ N-API binding source
   scripts/
-    install.mjs         install hook: prefer prebuild, fall back to source
     prebuild.mjs        run prebuildify --napi --strip for the host
     build-deps.mjs      Cross-platform CMake driver for igraph + libleidenalg
     write-version-header.mjs   generate native/version_generated.h
     clean.mjs           remove dist / build / prebuilds / vendor/build-deps
+    bump-vendor.mjs     bump pinned submodule SHAs to a new tag
   vendor/
     igraph/             git submodule — igraph C library
     libleidenalg/       git submodule — libleidenalg C++ core
@@ -652,11 +645,11 @@ fast-leiden/
 
 ## Known limitations
 
-- **Source build needed off the prebuild matrix.** Prebuilds cover
+- **No prebuild = build from source manually.** Prebuilds cover
   Linux x64 (glibc + musl), Linux arm64 (glibc + musl), macOS arm64,
-  macOS x64, and Windows x64. Other targets (Windows arm64, FreeBSD, …)
-  fall through to the source build at install time and need CMake + a
-  C++17 toolchain + Python. See [Install model](#install-model).
+  and Windows x64. Other targets (Intel Mac, Windows arm64, FreeBSD, …)
+  have to install from a `--recursive` git clone and run `pnpm build`
+  (CMake + C++17 toolchain + Python required). See [Install model](#install-model).
 - **Async input copy is synchronous.** The Leiden optimisation itself runs on
   a worker thread, but the JS→C++ copy of `sources`, `targets`, and `weights`
   happens on the JS thread before the worker is queued. For multi-million

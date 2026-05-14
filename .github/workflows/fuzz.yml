@@ -51,7 +51,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-fuzz-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build vendor deps + native addon with ASan/UBSan
         env:
