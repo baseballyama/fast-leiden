@@ -19,6 +19,12 @@ permissions:
   contents: read
 
 jobs:
+  # Every job uses `pnpm install --frozen-lockfile --ignore-scripts`. The
+  # tarball ships no install hook, so npm/pnpm would otherwise see our
+  # `binding.gyp` at install time and auto-invoke `node-gyp rebuild`
+  # against an un-built vendor tree. Skipping install scripts and
+  # letting the explicit `pnpm build` / `pnpm prebuild` step drive the
+  # build keeps that under our control.
   static:
     name: Static checks
     runs-on: ubuntu-latest
@@ -39,7 +45,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Format check
         run: pnpm format:check
@@ -119,7 +125,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build
       - run: pnpm test
       # Perf regression gate. The bench is small (~5K nodes / ~30K
@@ -154,7 +160,7 @@ jobs:
           path: vendor/build-deps
           key: ${{ runner.os }}-build-deps-san-${{ hashFiles('.gitmodules', 'scripts/build-deps.mjs') }}-${{ hashFiles('vendor/igraph/CMakeLists.txt', 'vendor/libleidenalg/CMakeLists.txt') }}
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build vendor deps + native addon with ASan/UBSan
         env:
@@ -199,7 +205,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build prebuild for the host platform
         # The published tarball no longer ships vendor sources or an install

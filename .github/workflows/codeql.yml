@@ -80,7 +80,7 @@ jobs:
       - name: Build native (so CodeQL can trace the compiler)
         if: matrix.language == 'c-cpp'
         run: |
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --ignore-scripts
           pnpm build
 
       - name: Autobuild (JS/TS)
