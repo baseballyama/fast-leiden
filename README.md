@@ -390,15 +390,15 @@ The npm tarball ships **prebuilt binaries via [`prebuildify`](https://github.com
 for the platforms in our release matrix and **nothing else** — no vendored
 sources, no `binding.gyp`, no install hook:
 
-| Platform        | libc  | Status                                                  |
-| --------------- | ----- | ------------------------------------------------------- |
-| `linux-x64`     | glibc | ✅ prebuilt                                             |
-| `linux-x64`     | musl  | ✅ prebuilt (Alpine / distroless musl)                  |
-| `linux-arm64`   | glibc | ✅ prebuilt (AWS Graviton, ARM servers)                 |
-| `linux-arm64`   | musl  | ✅ prebuilt (Alpine on ARM, via dockerized cross-build) |
-| `darwin-arm64`  | —     | ✅ prebuilt (Apple Silicon)                             |
-| `win32-x64`     | —     | ✅ prebuilt                                             |
-| `darwin-x64`, `win32-arm64`, BSD, … | — | ❌ install from git checkout (see below)    |
+| Platform                            | libc  | Status                                                  |
+| ----------------------------------- | ----- | ------------------------------------------------------- |
+| `linux-x64`                         | glibc | ✅ prebuilt                                             |
+| `linux-x64`                         | musl  | ✅ prebuilt (Alpine / distroless musl)                  |
+| `linux-arm64`                       | glibc | ✅ prebuilt (AWS Graviton, ARM servers)                 |
+| `linux-arm64`                       | musl  | ✅ prebuilt (Alpine on ARM, via dockerized cross-build) |
+| `darwin-arm64`                      | —     | ✅ prebuilt (Apple Silicon)                             |
+| `win32-x64`                         | —     | ✅ prebuilt                                             |
+| `darwin-x64`, `win32-arm64`, BSD, … | —     | ❌ install from git checkout (see below)                |
 
 At `require()` time, [`node-gyp-build`](https://github.com/prebuild/node-gyp-build)
 resolves `prebuilds/<platform>-<arch>/` and loads the matching `.node` file. If
