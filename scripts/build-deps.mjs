@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 // we hand each CMake project a static VERSION file before configuring.
 // Update these when bumping submodule pins.
 const IGRAPH_VERSION_FALLBACK = "1.0.1";
-const LIBLEIDENALG_VERSION_FALLBACK = "0.12.0";
+const LIBLEIDENALG_VERSION_FALLBACK = "0.13.0";
 
 // binding.gyp pins MACOSX_DEPLOYMENT_TARGET to 11.0; the CMake build of the
 // vendored deps must match, otherwise the final `ld` step emits "built for
