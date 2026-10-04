@@ -12,7 +12,41 @@ permissions:
   contents: read
 
 jobs:
+  merge-pr16-main:
+    # Same conflict resolution for PR #16 (lock file maintenance).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 312b26c1f6e982aece0a0e6ca0927a91acaec615
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Merge main and relock
+        run: |
+          git config user.name ci-tmp
+          git config user.email ci-tmp@example.invalid
+          git fetch origin d42fa2343fac9bcb1dadc89b4c6fe50668abebcd
+          git merge --no-ff --no-commit d42fa2343fac9bcb1dadc89b4c6fe50668abebcd || true
+          git diff --name-only --diff-filter=U
+          git checkout --ours pnpm-lock.yaml
+          pnpm --version
+          pnpm install --lockfile-only --ignore-scripts
+          mkdir -p out
+          cp package.json pnpm-lock.yaml out/
+          git show 312b26c1f6e982aece0a0e6ca0927a91acaec615:pnpm-lock.yaml > out/base-pr16-pnpm-lock.yaml
+          diff -u out/base-pr16-pnpm-lock.yaml pnpm-lock.yaml > out/lock-vs-pr16.diff || true
+          sha256sum out/* | tee out/sha256.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: merge-pr16-main
+          path: out/
+          retention-days: 7
+
   merge-pr15-main:
+    if: false
     # Resolves the pnpm-lock.yaml conflict when merging main (node-gyp 12)
     # into the PR #15 branch: keep the branch's lock, then relock against
     # the merged package.json.
