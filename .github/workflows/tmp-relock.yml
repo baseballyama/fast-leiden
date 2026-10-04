@@ -1,8 +1,10 @@
 name: tmp relock (temporary, delete after use)
 
-# Temporary helper: regenerates pnpm-lock.yaml on a GitHub runner for the
-# Renovate compatibility fixes, so no lockfile is produced on a local
-# machine. Lives only on the ci-tmp/relock-fast-leiden branch.
+# Temporary helper: regenerates pnpm-lock.yaml and runs the formatter on a
+# GitHub runner for the Renovate compatibility work, so nothing heavy runs
+# on a local machine. Lives only on the ci-tmp/relock-fast-leiden branch.
+# Earlier runs of this branch (relock / merge-pr15-main / merge-pr16-main)
+# are kept in git history.
 
 on:
   push:
@@ -11,142 +13,76 @@ on:
 permissions:
   contents: read
 
+env:
+  MAIN: 9d562b10682808bbcf456067dae9aa938041f380
+  PR16: 74e688d568b890b9b1ad5328bd3efadaf2e7d8c8
+
 jobs:
-  merge-pr16-main:
-    # Same conflict resolution for PR #16 (lock file maintenance).
+  pr16-merge-main-relock-format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 312b26c1f6e982aece0a0e6ca0927a91acaec615
+          ref: ${{ env.PR16 }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Merge main and relock
+      - name: Merge main, relock (A = from main's lock, B = from #16's lock)
         run: |
           git config user.name ci-tmp
           git config user.email ci-tmp@example.invalid
-          git fetch origin d42fa2343fac9bcb1dadc89b4c6fe50668abebcd
-          git merge --no-ff --no-commit d42fa2343fac9bcb1dadc89b4c6fe50668abebcd || true
-          git diff --name-only --diff-filter=U
-          git checkout --ours pnpm-lock.yaml
-          pnpm --version
-          pnpm install --lockfile-only --ignore-scripts
+          git merge --no-ff --no-commit "$MAIN" || true
+          echo "conflicts:"; git diff --name-only --diff-filter=U
           mkdir -p out
-          cp package.json pnpm-lock.yaml out/
-          git show 312b26c1f6e982aece0a0e6ca0927a91acaec615:pnpm-lock.yaml > out/base-pr16-pnpm-lock.yaml
-          diff -u out/base-pr16-pnpm-lock.yaml pnpm-lock.yaml > out/lock-vs-pr16.diff || true
+          git diff "$MAIN" -- package.json > out/package-vs-main.diff || true
+          pnpm --version | tee out/pnpm-version.txt
+          git show "$PR16":pnpm-lock.yaml > pnpm-lock.yaml
+          pnpm install --lockfile-only --ignore-scripts
+          cp pnpm-lock.yaml out/B-from-pr16-lock.yaml
+          git show "$MAIN":pnpm-lock.yaml > pnpm-lock.yaml
+          pnpm install --lockfile-only --ignore-scripts
+          cp pnpm-lock.yaml out/A-from-main-lock.yaml
+          git show "$MAIN":pnpm-lock.yaml > out/main-lock.yaml
+          diff -u out/main-lock.yaml out/A-from-main-lock.yaml > out/A-vs-main.diff || true
+          diff -u out/main-lock.yaml out/B-from-pr16-lock.yaml > out/B-vs-main.diff || true
+          cp package.json out/
+      - name: Format check on the merged tree (lock A)
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          git add -A
+          pnpm format
+          git diff --stat | tee out/format-diff-stat.txt
+          git diff > out/format.diff
+          wc -c out/format.diff
           sha256sum out/* | tee out/sha256.txt
       - uses: actions/upload-artifact@v7
         with:
-          name: merge-pr16-main
+          name: pr16-merge-main
           path: out/
           retention-days: 7
 
-  merge-pr15-main:
-    if: false
-    # Resolves the pnpm-lock.yaml conflict when merging main (node-gyp 12)
-    # into the PR #15 branch: keep the branch's lock, then relock against
-    # the merged package.json.
+  main-format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 139cff691dee90baba9747c4c51fabcf9f331ad1
-          fetch-depth: 0
+          ref: ${{ env.MAIN }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Merge main and relock
+      - name: pnpm format on main (= #15 squash)
         run: |
-          git config user.name ci-tmp
-          git config user.email ci-tmp@example.invalid
-          git fetch origin d42fa2343fac9bcb1dadc89b4c6fe50668abebcd
-          git merge --no-ff --no-commit d42fa2343fac9bcb1dadc89b4c6fe50668abebcd || true
-          git diff --name-only --diff-filter=U
-          git checkout --ours pnpm-lock.yaml
-          pnpm --version
-          pnpm install --lockfile-only --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm format
           mkdir -p out
-          cp package.json pnpm-lock.yaml out/
-          git show 139cff691dee90baba9747c4c51fabcf9f331ad1:pnpm-lock.yaml > out/base-pr15-pnpm-lock.yaml
-          diff -u out/base-pr15-pnpm-lock.yaml pnpm-lock.yaml > out/lock-vs-pr15.diff || true
-          sha256sum out/* | tee out/sha256.txt
+          git status --porcelain | tee out/status.txt
+          git diff > out/format.diff
+          wc -c out/format.diff
       - uses: actions/upload-artifact@v7
         with:
-          name: merge-pr15-main
-          path: out/
-          retention-days: 7
-
-  relock:
-    if: false
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: ngyp
-            base: 53e7a39795f95f106e03659b8e0097415ba34c45
-            pushed: 5f59bb3bcbd03bd13bfe296c4e6166dde8691df4
-          - name: pr15
-            base: 6c882641b8364ada2becf7a6308c3682ea38bd8a
-            pushed: 139cff691dee90baba9747c4c51fabcf9f331ad1
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ matrix.base }}
-          fetch-depth: 0
-
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: Apply the package.json edit
-        run: |
-          case "${{ matrix.name }}" in
-            ngyp) sed -i 's/"node-gyp": "\^11.5.0"/"node-gyp": "^12.4.0"/' package.json ;;
-            pr15) sed -i 's/"@vitest\/coverage-v8": "\^2.1.9"/"@vitest\/coverage-v8": "^4.0.0"/' package.json ;;
-          esac
-          git diff --stat
-
-      - name: Drop stale vite 5 lock entries (pr15 only)
-        if: matrix.name == 'pr15'
-        run: |
-          python3 - <<'EOF'
-          import re
-          p = "pnpm-lock.yaml"
-          s = open(p).read()
-          blocks = re.split(r"(?m)^(?=  \S)", s)
-          kept = [b for b in blocks if not b.startswith("  vite@5.4.21")]
-          print("removed", len(blocks) - len(kept))
-          open(p, "w").write("".join(kept))
-          EOF
-
-      - name: Relock
-        run: |
-          pnpm --version
-          pnpm install --lockfile-only --ignore-scripts
-
-      - name: Compare with the pushed commit
-        run: |
-          mkdir -p out
-          cp package.json pnpm-lock.yaml out/
-          git show ${{ matrix.pushed }}:pnpm-lock.yaml > out/pushed-pnpm-lock.yaml
-          git show ${{ matrix.pushed }}:package.json > out/pushed-package.json
-          if diff -u out/pushed-pnpm-lock.yaml pnpm-lock.yaml > out/lock.diff && diff -u out/pushed-package.json package.json > out/package.diff; then
-            echo "IDENTICAL" | tee out/result.txt
-          else
-            echo "DIFFERENT" | tee out/result.txt
-            head -100 out/lock.diff out/package.diff
-          fi
-          sha256sum out/* | tee out/sha256.txt
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: relock-${{ matrix.name }}
+          name: main-format
           path: out/
           retention-days: 7
