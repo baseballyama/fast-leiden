@@ -23,16 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 8b912ca578d392b70c9db8f9af3f8565456d91f0
+          ref: 50dfd7aa68c2105692c43c7cf9740b07c12ea62a
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: pnpm format on #16 head
+      - name: pnpm format on #16 head (renovate 50dfd7a)
         run: |
           OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
           git rev-parse HEAD | tee "$OUT/head.txt"
-          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$OUT/install.log"
           pnpm format
           git status --porcelain | tee "$OUT/status.txt"
           git diff > "$OUT/format.diff"
