@@ -1,10 +1,10 @@
 name: tmp relock (temporary, delete after use)
 
-# Temporary helper: regenerates pnpm-lock.yaml and runs the formatter on a
-# GitHub runner for the Renovate compatibility work, so nothing heavy runs
-# on a local machine. Lives only on the ci-tmp/relock-fast-leiden branch.
-# Earlier runs of this branch (relock / merge-pr15-main / merge-pr16-main)
-# are kept in git history.
+# Temporary helper (ci-tmp/relock-fast-leiden only, never merged).
+# Fresh lock-file maintenance candidate for #16, measured on a runner:
+# package.json is pinned to main; the lockfile is regenerated from scratch
+# (what Renovate's lockFileMaintenance does) and compared with main's lock
+# and with the original #16 head. Earlier runs are kept in git history.
 
 on:
   push:
@@ -18,71 +18,42 @@ env:
   PR16: 74e688d568b890b9b1ad5328bd3efadaf2e7d8c8
 
 jobs:
-  pr16-merge-main-relock-format:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.PR16 }}
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - name: Merge main, relock (A = from main's lock, B = from #16's lock)
-        run: |
-          git config user.name ci-tmp
-          git config user.email ci-tmp@example.invalid
-          git merge --no-ff --no-commit "$MAIN" || true
-          echo "conflicts:"; git diff --name-only --diff-filter=U
-          mkdir -p out
-          git diff "$MAIN" -- package.json > out/package-vs-main.diff || true
-          pnpm --version | tee out/pnpm-version.txt
-          git show "$PR16":pnpm-lock.yaml > pnpm-lock.yaml
-          pnpm install --lockfile-only --ignore-scripts
-          cp pnpm-lock.yaml out/B-from-pr16-lock.yaml
-          git show "$MAIN":pnpm-lock.yaml > pnpm-lock.yaml
-          pnpm install --lockfile-only --ignore-scripts
-          cp pnpm-lock.yaml out/A-from-main-lock.yaml
-          git show "$MAIN":pnpm-lock.yaml > out/main-lock.yaml
-          diff -u out/main-lock.yaml out/A-from-main-lock.yaml > out/A-vs-main.diff || true
-          diff -u out/main-lock.yaml out/B-from-pr16-lock.yaml > out/B-vs-main.diff || true
-          cp package.json out/
-      - name: Format check on the merged tree (lock A)
-        run: |
-          pnpm install --frozen-lockfile --ignore-scripts
-          git add -A
-          pnpm format
-          git diff --stat | tee out/format-diff-stat.txt
-          git diff > out/format.diff
-          wc -c out/format.diff
-          sha256sum out/* | tee out/sha256.txt
-      - uses: actions/upload-artifact@v7
-        with:
-          name: pr16-merge-main
-          path: out/
-          retention-days: 7
-
-  main-format:
+  fresh-maintenance:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ env.MAIN }}
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: pnpm format on main (= #15 squash)
+      - name: Fresh relock from main's package.json
         run: |
-          pnpm install --frozen-lockfile --ignore-scripts
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          pnpm --version | tee "$OUT/pnpm-version.txt"
+          date -u +%FT%TZ | tee "$OUT/resolved-at.txt"
+          rm pnpm-lock.yaml
+          pnpm install --lockfile-only --ignore-scripts 2>&1 | tee "$OUT/relock.log"
+          cp pnpm-lock.yaml "$OUT/fresh-lock.yaml"
+          git show "$MAIN":pnpm-lock.yaml > "$OUT/main-lock.yaml"
+          git show "$PR16":pnpm-lock.yaml > "$OUT/pr16-lock.yaml"
+          git show "d42fa2343fac9bcb1dadc89b4c6fe50668abebcd":pnpm-lock.yaml > "$OUT/pr16-base-lock.yaml"
+          diff -u "$OUT/main-lock.yaml" "$OUT/fresh-lock.yaml" > "$OUT/fresh-vs-main.diff" || true
+          diff -u "$OUT/pr16-base-lock.yaml" "$OUT/pr16-lock.yaml" > "$OUT/pr16-original.diff" || true
+          git status --porcelain | tee "$OUT/status-after-relock.txt"
+      - name: Install from the fresh lock and run the formatter
+        run: |
+          OUT="$RUNNER_TEMP/out"
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$OUT/install.log"
           pnpm format
-          mkdir -p out
-          git status --porcelain | tee out/status.txt
-          git diff > out/format.diff
-          wc -c out/format.diff
+          git diff -- . ':(exclude)pnpm-lock.yaml' > "$OUT/format.diff"
+          git status --porcelain | tee "$OUT/status-after-format.txt"
+          wc -c "$OUT/format.diff"
+          sha256sum "$OUT"/* | tee "$OUT/sha256.txt"
       - uses: actions/upload-artifact@v7
         with:
-          name: main-format
-          path: out/
+          name: fresh-maintenance
+          path: ${{ runner.temp }}/out/
           retention-days: 7
