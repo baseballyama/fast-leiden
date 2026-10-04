@@ -18,42 +18,29 @@ env:
   PR16: 74e688d568b890b9b1ad5328bd3efadaf2e7d8c8
 
 jobs:
-  fresh-maintenance:
+  pr16-head-format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ env.MAIN }}
-          fetch-depth: 0
+          ref: 8b912ca578d392b70c9db8f9af3f8565456d91f0
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Fresh relock from main's package.json
+      - name: pnpm format on #16 head
         run: |
           OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
-          pnpm --version | tee "$OUT/pnpm-version.txt"
-          date -u +%FT%TZ | tee "$OUT/resolved-at.txt"
-          rm pnpm-lock.yaml
-          pnpm install --lockfile-only --ignore-scripts 2>&1 | tee "$OUT/relock.log"
-          cp pnpm-lock.yaml "$OUT/fresh-lock.yaml"
-          git show "$MAIN":pnpm-lock.yaml > "$OUT/main-lock.yaml"
-          git show "$PR16":pnpm-lock.yaml > "$OUT/pr16-lock.yaml"
-          git show "d42fa2343fac9bcb1dadc89b4c6fe50668abebcd":pnpm-lock.yaml > "$OUT/pr16-base-lock.yaml"
-          diff -u "$OUT/main-lock.yaml" "$OUT/fresh-lock.yaml" > "$OUT/fresh-vs-main.diff" || true
-          diff -u "$OUT/pr16-base-lock.yaml" "$OUT/pr16-lock.yaml" > "$OUT/pr16-original.diff" || true
-          git status --porcelain | tee "$OUT/status-after-relock.txt"
-      - name: Install from the fresh lock and run the formatter
-        run: |
-          OUT="$RUNNER_TEMP/out"
-          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee "$OUT/install.log"
+          git rev-parse HEAD | tee "$OUT/head.txt"
+          pnpm install --frozen-lockfile --ignore-scripts
           pnpm format
-          git diff -- . ':(exclude)pnpm-lock.yaml' > "$OUT/format.diff"
-          git status --porcelain | tee "$OUT/status-after-format.txt"
+          git status --porcelain | tee "$OUT/status.txt"
+          git diff > "$OUT/format.diff"
           wc -c "$OUT/format.diff"
-          sha256sum "$OUT"/* | tee "$OUT/sha256.txt"
-      - uses: actions/upload-artifact@v7
+          test ! -s "$OUT/format.diff"
+      - if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: fresh-maintenance
+          name: pr16-head-format
           path: ${{ runner.temp }}/out/
           retention-days: 7
