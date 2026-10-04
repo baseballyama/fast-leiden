@@ -1,0 +1,82 @@
+name: tmp relock (temporary, delete after use)
+
+# Temporary helper: regenerates pnpm-lock.yaml on a GitHub runner for the
+# Renovate compatibility fixes, so no lockfile is produced on a local
+# machine. Lives only on the ci-tmp/relock-fast-leiden branch.
+
+on:
+  push:
+    branches: ["ci-tmp/relock-fast-leiden"]
+
+permissions:
+  contents: read
+
+jobs:
+  relock:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ngyp
+            base: 53e7a39795f95f106e03659b8e0097415ba34c45
+            pushed: 5f59bb3bcbd03bd13bfe296c4e6166dde8691df4
+          - name: pr15
+            base: 6c882641b8364ada2becf7a6308c3682ea38bd8a
+            pushed: 139cff691dee90baba9747c4c51fabcf9f331ad1
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.base }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Apply the package.json edit
+        run: |
+          case "${{ matrix.name }}" in
+            ngyp) sed -i 's/"node-gyp": "\^11.5.0"/"node-gyp": "^12.4.0"/' package.json ;;
+            pr15) sed -i 's/"@vitest\/coverage-v8": "\^2.1.9"/"@vitest\/coverage-v8": "^4.0.0"/' package.json ;;
+          esac
+          git diff --stat
+
+      - name: Drop stale vite 5 lock entries (pr15 only)
+        if: matrix.name == 'pr15'
+        run: |
+          python3 - <<'EOF'
+          import re
+          p = "pnpm-lock.yaml"
+          s = open(p).read()
+          blocks = re.split(r"(?m)^(?=  \S)", s)
+          kept = [b for b in blocks if not b.startswith("  vite@5.4.21")]
+          print("removed", len(blocks) - len(kept))
+          open(p, "w").write("".join(kept))
+          EOF
+
+      - name: Relock
+        run: |
+          pnpm --version
+          pnpm install --lockfile-only --ignore-scripts
+
+      - name: Compare with the pushed commit
+        run: |
+          mkdir -p out
+          cp package.json pnpm-lock.yaml out/
+          git show ${{ matrix.pushed }}:pnpm-lock.yaml > out/pushed-pnpm-lock.yaml
+          git show ${{ matrix.pushed }}:package.json > out/pushed-package.json
+          if diff -u out/pushed-pnpm-lock.yaml pnpm-lock.yaml > out/lock.diff && diff -u out/pushed-package.json package.json > out/package.diff; then
+            echo "IDENTICAL" | tee out/result.txt
+          else
+            echo "DIFFERENT" | tee out/result.txt
+            head -100 out/lock.diff out/package.diff
+          fi
+          sha256sum out/* | tee out/sha256.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: relock-${{ matrix.name }}
+          path: out/
+          retention-days: 7
