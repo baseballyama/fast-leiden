@@ -419,10 +419,15 @@ For local development:
 ```bash
 git clone --recursive https://github.com/baseballyama/fast-leiden.git
 cd fast-leiden
-pnpm install
+pnpm install --ignore-scripts
 pnpm build          # builds igraph + libleidenalg (CMake), then the addon, then TS
 pnpm test
 ```
+
+`--ignore-scripts` is required on a fresh checkout: because the repo root has
+a `binding.gyp`, a plain `pnpm install` runs an implicit `node-gyp rebuild`,
+which fails until `pnpm build` has compiled the CMake deps and generated
+`native/version_generated.h`.
 
 If you already cloned without `--recursive`, fetch the submodules:
 
@@ -449,7 +454,7 @@ nix develop                     # one-shot shell
 direnv allow                    # auto-loads on cd
 ```
 
-Inside the shell, `pnpm install && pnpm build && pnpm test` works without any
+Inside the shell, `pnpm install --ignore-scripts && pnpm build && pnpm test` works without any
 further setup, and `pnpm bench` finds Python's leidenalg out of the box.
 
 ## Build requirements (without Nix)
@@ -483,7 +488,7 @@ release.
 **Tier 2 — best-effort, build from a git checkout.** No prebuilt binary
 ships in the npm tarball, and there is no install-time source build. To
 use fast-leiden on one of these targets, clone the repo with
-`--recursive` and run `pnpm install && pnpm build`; the resulting addon
+`--recursive` and run `pnpm install --ignore-scripts && pnpm build`; the resulting addon
 loads via the same `node-gyp-build` resolver. We accept bug reports and
 will land fixes, but we don't gate releases on it.
 
