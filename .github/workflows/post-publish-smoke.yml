@@ -90,7 +90,7 @@ jobs:
         # Also skip for the dockerized arm64-musl path; that one runs
         # entirely inside `docker run node:22-alpine` further down.
         if: matrix.container == '' && !matrix.dockerized_musl
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
 
