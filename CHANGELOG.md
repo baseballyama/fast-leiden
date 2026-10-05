@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+### Patch Changes
+
+- c561314: Bump the `node-addon-api` dependency from `^8.7.0` to `^8.9.2`.
+
 ## 1.1.0
 
 ### Minor Changes
