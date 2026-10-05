@@ -9,7 +9,13 @@
   ],
   "labels": ["dependencies"],
   "rangeStrategy": "bump",
+  "minimumReleaseAge": "1 day",
   "packageRules": [
+    {
+      "description": "engines.node is the support floor promised to users; raising it is a release decision, not a routine bump",
+      "matchDepTypes": ["engines"],
+      "enabled": false
+    },
     {
       "description": "Group all non-major devDependency bumps into one PR",
       "matchDepTypes": ["devDependencies"],
