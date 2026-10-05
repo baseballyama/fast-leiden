@@ -58,7 +58,7 @@ jobs:
     outputs:
       hasChangesets: ${{ steps.check.outputs.hasChangesets }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - id: check
         shell: bash
@@ -81,30 +81,28 @@ jobs:
     if: needs.check.outputs.hasChangesets == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 24.21.0
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - uses: changesets/action@v1
+      - uses: changesets/action@v2
         with:
-          version: pnpm changeset version
+          version-script: pnpm changeset version
           # Empty publish: this run only opens / updates the Version
           # Packages PR. The actual publish happens on the next push to
           # main (the merge of that PR), via the prebuild + publish jobs
           # below.
-          publish: ""
-          title: "chore(release): version packages"
-          commit: "chore(release): version packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: ""
+          pr-title: "chore(release): version packages"
+          commit-message: "chore(release): version packages"
 
   prebuild:
     # The job is NOT gated by `if:` at the job level — that would skip
@@ -216,7 +214,7 @@ jobs:
             python3 \
             curl
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: needs.check.outputs.hasChangesets == 'false'
         with:
           submodules: recursive
@@ -224,10 +222,10 @@ jobs:
       - uses: pnpm/action-setup@v6
         if: needs.check.outputs.hasChangesets == 'false' && !matrix.dockerized_musl
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: needs.check.outputs.hasChangesets == 'false' && !matrix.dockerized_musl
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
 
       # Windows runners don't include bison / flex. See the matching
@@ -314,7 +312,7 @@ jobs:
         shell: bash
         run: echo "Pending changesets exist; nothing to publish on this push."
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: needs.check.outputs.hasChangesets == 'false'
         with:
           fetch-depth: 0
@@ -323,10 +321,10 @@ jobs:
       - uses: pnpm/action-setup@v6
         if: needs.check.outputs.hasChangesets == 'false'
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: needs.check.outputs.hasChangesets == 'false'
         with:
-          node-version: 24
+          node-version: 24.21.0
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile --ignore-scripts
@@ -448,17 +446,16 @@ jobs:
       - name: Publish via changesets
         id: publish
         if: needs.check.outputs.hasChangesets == 'false'
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
           # Skip `pnpm release` (which would re-run `pnpm build` and
           # overwrite the staged prebuilds with a fresh source build for
           # only the ubuntu runner's platform). We've already built the
           # TypeScript output and staged every platform's prebuild above,
           # so we just want changeset to drive `npm publish`.
-          publish: pnpm exec changeset publish
-          createGithubReleases: true
+          publish-script: pnpm exec changeset publish
+          create-github-releases: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
 
       - name: Attach SBOM to GitHub Release
