@@ -282,7 +282,10 @@ jobs:
               git config --global --add safe.directory /workspace
               git config --global --add safe.directory /workspace/vendor/igraph
               git config --global --add safe.directory /workspace/vendor/libleidenalg
-              npm install -g pnpm@9.15.9
+              # Read the version from packageManager so this container
+              # cannot drift from pnpm/action-setup used everywhere else;
+              # an older pnpm cannot parse a newer lockfile format.
+              npm install -g "$(node -p "require(\"./package.json\").packageManager")"
               pnpm install --frozen-lockfile --ignore-scripts
               pnpm run prebuild
               # Make the output readable by the runner user on the host
