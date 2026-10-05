@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       node-addon-api:
-        specifier: ^8.7.0
+        specifier: ^8.9.2
         version: 8.9.2
       node-gyp-build:
         specifier: ^4.8.4
