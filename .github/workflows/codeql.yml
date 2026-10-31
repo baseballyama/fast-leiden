@@ -74,7 +74,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: matrix.language == 'c-cpp'
         with:
-          node-version: 24.21.0
+          node-version: 24.22.2
           cache: pnpm
 
       - name: Build native (so CodeQL can trace the compiler)
